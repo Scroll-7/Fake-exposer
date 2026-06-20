@@ -338,9 +338,18 @@ textarea:focus, input[type="url"]:focus {
 .percentage {
     fill: var(--text-main);
     font-family: 'Outfit', sans-serif;
-    font-size: 0.5rem;
-    font-weight: bold;
+    font-size: 0.52rem;
+    font-weight: 800;
     text-anchor: middle;
+}
+
+.percentage-label {
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.28rem;
+    font-weight: 700;
+    text-anchor: middle;
+    letter-spacing: 0.04rem;
+    text-transform: uppercase;
 }
 
 .verdict {

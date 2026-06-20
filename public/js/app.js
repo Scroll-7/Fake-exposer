@@ -126,9 +126,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData();
         formData.append('image', selectedFile);
 
+        // Send the optional user context (e.g. "this is an AI generated photo")
+        const userContext = document.getElementById('image-context')?.value?.trim() || '';
+        if (userContext) formData.append('context', userContext);
+
         setLoading(analyzeImageBtn, true);
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
         try {
             const res = await fetch('/api/analyze/image', {
                 method: 'POST',
@@ -185,18 +189,67 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderResults(data) {
         document.getElementById('results').classList.remove('hidden');
         document.getElementById('app-layout').classList.add('has-results');
-        
+
         // Scroll to results
         setTimeout(() => {
             document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
         }, 100);
 
-        // Score Meter
+        const credibility = data.credibility_score; // 0-100 (high = real)
+
+        // ── Decide whether to show FAKE% or REAL% ──
+        // If credibility < 50 → the image is more fake → show FAKE %
+        // If credibility >= 50 → the image is more real → show REAL %
+        const isFake = credibility < 50;
+        const displayPct = isFake ? (100 - credibility) : credibility;
+        const displayLabel = isFake ? 'FAKE' : 'REAL';
+
+        // ── Color logic ──
+        // High fake (≥70% fake) → red
+        // High real (≥70% real) → green
+        // Everything in between → yellow
+        let color, colorRaw;
+        if (isFake && displayPct >= 70) {
+            color = 'var(--red)';   colorRaw = '#ef4444';
+        } else if (!isFake && displayPct >= 70) {
+            color = 'var(--green)'; colorRaw = '#10b981';
+        } else {
+            color = 'var(--amber)'; colorRaw = '#f59e0b';
+        }
+
+        // ── Meter ring: fill based on displayPct ──
         const scoreCircle = document.getElementById('score-circle');
-        const scoreText = document.getElementById('score-text');
-        const score = data.credibility_score;
-        
-        // Show trusted boost badge if applicable
+        const scoreText   = document.getElementById('score-text');
+        const scoreLabel  = document.getElementById('score-label');
+
+        scoreCircle.style.stroke = color;
+        scoreText.style.fill     = color;
+        scoreLabel.style.fill    = color;
+        scoreLabel.textContent   = displayLabel;
+
+        // Animate ring fill
+        setTimeout(() => {
+            scoreCircle.setAttribute('stroke-dasharray', `${displayPct}, 100`);
+        }, 100);
+
+        // Animate number counter
+        let current = 0;
+        const interval = setInterval(() => {
+            if (current >= displayPct) {
+                clearInterval(interval);
+                scoreText.textContent = `${displayPct}%`;
+            } else {
+                current++;
+                scoreText.textContent = `${current}%`;
+            }
+        }, 14);
+
+        // ── Meter title: "99% FAKE" or "72% REAL" as the big heading ──
+        const meterTitle = document.getElementById('meter-title');
+        meterTitle.textContent = `${displayPct}% ${displayLabel}`;
+        meterTitle.style.color = colorRaw;
+
+        // ── Trusted boost badge ──
         const existingBadge = document.getElementById('trusted-boost-badge');
         if (existingBadge) existingBadge.remove();
         if (data.trusted_boost_applied) {
@@ -206,33 +259,8 @@ document.addEventListener('DOMContentLoaded', () => {
             badge.innerHTML = '⭐ Trusted Source Boost Applied <span>+50%</span>';
             document.querySelector('.meter-card').appendChild(badge);
         }
-        
-        // Animate stroke dasharray (0 to score)
-        setTimeout(() => {
-            scoreCircle.setAttribute('stroke-dasharray', `${score}, 100`);
-        }, 100);
 
-        // Color based on score
-        let color = 'var(--red)';
-        if (score > 40) color = 'var(--amber)';
-        if (score > 70) color = 'var(--green)';
-        
-        scoreCircle.style.stroke = color;
-        scoreText.style.fill = color;
-        
-        // Animate number
-        let currentScore = 0;
-        const interval = setInterval(() => {
-            if (currentScore >= score) {
-                clearInterval(interval);
-                scoreText.textContent = `${score}%`;
-            } else {
-                currentScore++;
-                scoreText.textContent = `${currentScore}%`;
-            }
-        }, 15); // Duration depends on score
-
-        // Texts
+        // ── Verdict & summary ──
         const verdictEl = document.getElementById('verdict-text');
         verdictEl.textContent = data.verdict;
         verdictEl.style.color = color;
@@ -241,9 +269,9 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('bias-val').textContent = data.bias;
         document.getElementById('sentiment-val').textContent = data.sentiment;
 
-        // Lists
-        populateList('red-flags-list', data.red_flags || ["None detected"]);
-        populateList('green-flags-list', data.green_flags || ["None detected"]);
+        // ── Lists ──
+        populateList('red-flags-list', data.red_flags || ['None detected']);
+        populateList('green-flags-list', data.green_flags || ['None detected']);
         populateList('recommendations-list', data.recommendations || []);
     }
 

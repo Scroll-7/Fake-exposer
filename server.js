@@ -5,7 +5,7 @@ import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import { analyzeContent, analyzeImage } from './services/gemini.js';
+import { analyzeContent, analyzeImage } from './services/groq.js';
 import { scrapeUrl } from './services/scraper.js';
 import fs from 'fs';
 
@@ -58,7 +58,11 @@ app.post('/api/analyze/text', async (req, res) => {
         res.json(applyTrustedBoost(result));
     } catch (error) {
         console.error('Error analyzing text:', error);
-        res.status(500).json({ error: 'Failed to analyze text' });
+        if (error?.status === 429) {
+            res.status(429).json({ error: 'API rate limit reached. Please wait a minute and try again.' });
+        } else {
+            res.status(500).json({ error: 'Failed to analyze text' });
+        }
     }
 });
 
@@ -72,40 +76,62 @@ app.post('/api/analyze/url', async (req, res) => {
         res.json(applyTrustedBoost(result));
     } catch (error) {
         console.error('Error analyzing URL:', error);
-        res.status(500).json({ error: 'Failed to analyze URL' });
+        if (error?.status === 429) {
+            res.status(429).json({ error: 'API rate limit reached. Please wait a minute and try again.' });
+        } else {
+            res.status(500).json({ error: 'Failed to analyze URL' });
+        }
     }
 });
 
 app.post('/api/analyze/image', upload.single('image'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'Image is required' });
+    
+    const imagePath = req.file.path;
+    
     try {
-        if (!req.file) return res.status(400).json({ error: 'Image is required' });
-
-        const imagePath = req.file.path;
-        const imageData = fs.readFileSync(imagePath);
+        const imageData = await fs.promises.readFile(imagePath);
         const base64 = imageData.toString('base64');
+        const mimeType = req.file.mimetype;
 
-        // Detect mime type from magic bytes
-        let mimeType = 'image/jpeg';
-        if (imageData[0] === 0x89 && imageData[1] === 0x50) mimeType = 'image/png';
-        else if (imageData[0] === 0x47 && imageData[1] === 0x49) mimeType = 'image/gif';
-        else if (imageData[0] === 0x52 && imageData[1] === 0x49) mimeType = 'image/webp';
-
-        // Clean up temp file
-        fs.unlink(imagePath, () => {});
-
-        // Single Gemini call: reads image text + analyzes credibility (saves quota)
-        const result = await analyzeImage(base64, mimeType);
+        // Pass optional user context (e.g. "this is an AI generated photo of me")
+        const userContext = req.body.context || '';
+        const result = await analyzeImage(base64, mimeType, userContext);
         res.json(applyTrustedBoost(result));
     } catch (error) {
         console.error('Error analyzing image:', error);
         if (error?.status === 429) {
             res.status(429).json({ error: 'API rate limit reached. Please wait a moment and try again.' });
         } else {
-            res.status(500).json({ error: 'Failed to analyze image' });
+            res.status(500).json({ error: error.message || 'Failed to analyze image' });
+        }
+    } finally {
+        // Clean up temp file safely
+        try {
+            await fs.promises.unlink(imagePath);
+        } catch (unlinkError) {
+            console.error('Error deleting temp image file:', unlinkError);
         }
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-});
+function startServer(port) {
+    const server = app.listen(port, () => {
+        console.log(`Server running on http://localhost:${port}`);
+    });
+
+    server.on('error', async (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.log(`Port ${port} is busy. Killing the old process and retrying...`);
+            const { exec } = await import('child_process');
+            // Find and kill whatever is using the port
+            exec(`for /f "tokens=5" %a in ('netstat -aon ^| findstr :${port} ^| findstr LISTENING') do taskkill /F /PID %a`, { shell: 'cmd.exe' }, (error) => {
+                setTimeout(() => startServer(port), 1500);
+            });
+        } else {
+            console.error('Server error:', err);
+        }
+    });
+}
+
+startServer(PORT);

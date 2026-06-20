@@ -1,34 +1,30 @@
-import * as cheerio from 'cheerio';
-
 export async function scrapeUrl(url) {
     try {
-        // We use native fetch in Node 18+
-        const response = await fetch(url, {
+        // Use Jina Reader API to fetch and parse the URL into clean Markdown.
+        // This automatically handles JS-rendered sites and strips out boilerplate.
+        const jinaUrl = `https://r.jina.ai/${url}`;
+        
+        const response = await fetch(jinaUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+                'User-Agent': 'FakeNewsDetector/1.0',
+                'X-Return-Format': 'markdown'
             }
         });
         
         if (!response.ok) {
-            throw new Error(`Failed to fetch URL: ${response.statusText}`);
+            throw new Error(`Jina API failed: ${response.statusText}`);
         }
         
-        const html = await response.text();
-        const $ = cheerio.load(html);
+        const markdown = await response.text();
         
-        // Remove scripts, styles, nav, footer, etc to get cleaner text
-        $('script, style, nav, footer, header, aside, .ad, .advertisement').remove();
-        
-        // Try to find the main article content. If not, just get body text.
-        let articleText = $('article').text();
-        if (!articleText || articleText.trim() === '') {
-            articleText = $('body').text();
+        if (!markdown || markdown.trim() === '') {
+            throw new Error('No content returned from Jina API');
         }
         
-        // Clean up whitespace
-        return articleText.replace(/\s+/g, ' ').trim();
+        // Jina returns markdown format. This is actually perfect for Gemini analysis.
+        return markdown.trim();
     } catch (error) {
         console.error('Scraping error:', error);
-        throw new Error('Could not extract text from the provided URL.');
+        throw new Error('Could not extract text from the provided URL. It might be protected or invalid.');
     }
 }
