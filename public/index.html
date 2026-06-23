@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>News Checker | AI-Powered Credibility Analysis</title>
+    <title>Fake Exposer - AI & Fact Checking 🕵️</title>
     <meta name="description" content="Instantly analyze news articles, URLs, and screenshots for credibility, bias, and fake news indicators using advanced AI.">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/css/style.css">
@@ -18,11 +18,8 @@
     <main class="container">
         <header class="hero">
             <h1 class="title">
-                <svg class="shield-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-                    <path d="M9 12l2 2 4-4"></path>
-                </svg>
-                News <span class="gradient-text">Checker</span>
+                <span class="emoji-logo">🕵️</span>
+                Fake <span class="gradient-text">Exposer</span>
             </h1>
             <p class="subtitle">Is it real or fake? Paste some text, a link, or a picture to find out instantly!</p>
         </header>
@@ -122,8 +119,15 @@
                             <p>Drag & drop a screenshot or <span class="highlight">browse</span></p>
                             <input type="file" id="file-input" accept="image/*" hidden>
                         </div>
-                        <input type="text" id="image-context" class="context-input" placeholder="Optional: Describe what this image claims (e.g. 'Olise signing for Real Madrid')">
-                        <div id="file-name" class="file-name"></div>
+                        <div class="context-field">
+                            <label class="context-label" for="image-context">
+                                <span class="context-label-icon">💬</span>
+                                <span>Add Context <span class="context-optional">(Optional)</span></span>
+                            </label>
+                            <textarea id="image-context" class="context-input" rows="1" placeholder="Describe what this image claims — e.g. 'Olise signing for Real Madrid' or 'I think this is AI generated'"></textarea>
+                            <p class="context-hint">Providing context helps the AI make a more accurate verdict.</p>
+                        </div>
+                        <button class="secondary-btn hidden" id="change-image-btn">🔄 Change Image</button>
                         <button class="primary-btn analyze-btn hidden" id="analyze-image-btn">
                             <span class="btn-text">Analyze Image</span>
                             <span class="spinner hidden"></span>

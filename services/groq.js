@@ -70,8 +70,16 @@ const QUERY_TOLERANCE_INSTRUCTIONS = `
 `;
 
 export async function analyzeContent(text) {
-    // Perform a background web search to give the AI up-to-date 2024/2025 context
-    const searchResults = await searchWeb(text);
+    // Truncate query for DuckDuckGo to avoid massive payload errors (DuckDuckGo expects short queries)
+    const searchQuery = text.length > 300 ? text.substring(0, 300) : text;
+    const searchResults = await searchWeb(searchQuery);
+
+    // Truncate text for Llama model to prevent 413 Payload Too Large / Token Rate Limits
+    // The TPM limit is 12000 tokens. Safely truncate to 15,000 characters.
+    let contentToAnalyze = text;
+    if (contentToAnalyze.length > 15000) {
+        contentToAnalyze = contentToAnalyze.substring(0, 15000) + "\n...[Content truncated due to length]...";
+    }
 
     const prompt = `
     You are an expert fact-checker, journalism credibility analyst, and source reputation researcher.
@@ -86,7 +94,7 @@ export async function analyzeContent(text) {
     --------------------------------------------------------
 
     Text to analyze:
-    "${text}"
+    "${contentToAnalyze}"
 
     ${ANALYSIS_SCHEMA}
     `;
@@ -144,8 +152,8 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '') {
 
 --- GENERAL AI / MANIPULATION DETECTION ---
 1. Does this look AI-generated or AI-edited? Look for:
-   - Unnaturally smooth or waxy skin texture
-   - Exaggerated or impossible muscle definition / body proportions
+   - Unnaturally smooth or waxy skin texture (Note: account for bodybuilding stage oil/spray tan which looks waxy)
+   - Exaggerated or impossible muscle definition / body proportions (Note: extreme conditioning in professional bodybuilders is real, consider context)
    - Inconsistent lighting between body parts (e.g. face lit differently from torso)
    - Blurring or smearing at body edges / background seams
    - Unnatural background consistency or bokeh patterns
@@ -156,7 +164,7 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '') {
 
 --- IDENTITY CHECK (SPORTS IMAGES ONLY) ---
 4. If the person is wearing a sports jersey: name who you think they are (only if you are highly confident — if uncertain, say "unidentified person"). Also state what team jersey they wear, and whether that person actually plays for that team.
-5. If you are NOT confident about the person's identity, say so explicitly. DO NOT guess a famous person's name unless you are at least 90% certain.
+5. If you are NOT confident about the person's identity, say so explicitly. DO NOT guess a famous person's name unless you are at least 80% certain.
 
 --- SUMMARY ---
 6. Write a 2-3 sentence summary of what the image shows and whether it appears authentic or manipulated.
@@ -214,8 +222,8 @@ Be very specific and honest about uncertainty.`
 
       ── AI GENERATION / MANIPULATION CHECK (CRITICAL) ──
       Look for these signs of AI editing or generation:
-      • Unnaturally smooth, waxy, or plastic-looking skin
-      • Exaggerated muscle definition or body proportions that look physically impossible or inconsistent with the person's face/frame
+      • Unnaturally smooth, waxy, or plastic-looking skin (IMPORTANT: Do not penalize if the person is clearly a professional bodybuilder wearing stage oil/tan)
+      • Exaggerated muscle definition or body proportions that look physically impossible or inconsistent with the person's face/frame (IMPORTANT: Real professional bodybuilders on stage have extreme, shredded muscle definition)
       • Lighting inconsistencies — e.g. face lit from one direction, body from another
       • Blurry, smeared, or artificially sharpened body edges
       • Background that looks overly uniform, smeared, or mismatched to the foreground
@@ -225,13 +233,13 @@ Be very specific and honest about uncertainty.`
       If ANY of these signs are present, the image is LIKELY AI-GENERATED OR EDITED.
 
       ── IDENTITY CAUTION RULE ──
-      - If the person in the image is NOT a well-known public figure you are highly confident about (90%+), say "unidentified person" — do NOT guess a celebrity name.
+      - If the person in the image is NOT a well-known public figure you are highly confident about (80%+), say "unidentified person" — do NOT guess a celebrity name.
       - Many real people look slightly similar to athletes or celebrities. Similarity is NOT identification.
       - If a person's muscles/body looks AI-enhanced compared to a realistic build for their face/frame, say so.
 
       ── SPORTS JERSEY FACT-CHECK (only if applicable) ──
       If the person IS a highly-recognized athlete in a sports jersey:
-      1. Confirm their identity (only if 90%+ certain)
+      1. Confirm their identity (only if 80%+ certain)
       2. Confirm what team jersey they wear
       3. Cross-reference: does this player actually play for that team?
       4. If there's a mismatch → score 5-20, verdict "Fake / Manipulated - Player Not at This Club"

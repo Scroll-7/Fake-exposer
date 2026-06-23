@@ -40,11 +40,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // File Upload handling
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
-    const fileNameDisplay = document.getElementById('file-name');
+    const changeImageBtn = document.getElementById('change-image-btn');
     const analyzeImageBtn = document.getElementById('analyze-image-btn');
     let selectedFile = null;
+    let currentFileInput = fileInput; // always points to the active file input
 
-    dropZone.addEventListener('click', () => fileInput.click());
+    // Change Image button — stopPropagation prevents event bubbling to dropZone
+    changeImageBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        currentFileInput.click();
+    });
+
+    dropZone.addEventListener('click', () => currentFileInput.click());
 
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -75,7 +82,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         selectedFile = file;
-        fileNameDisplay.textContent = `Selected: ${file.name}`;
+        changeImageBtn.classList.remove('hidden');
         analyzeImageBtn.classList.remove('hidden');
 
         // Show image preview inside the drop zone
@@ -84,12 +91,11 @@ document.addEventListener('DOMContentLoaded', () => {
             dropZone.innerHTML = `
                 <img src="${e.target.result}" alt="Selected image" id="image-preview"
                      style="max-width:100%; max-height:220px; border-radius:10px; object-fit:contain; display:block; margin:0 auto;">
-                <p style="margin-top:10px; font-size:0.8rem; color:var(--text-muted);">Click to change image</p>
                 <input type="file" id="file-input" accept="image/*" hidden>
             `;
-            // Re-bind file input after re-render
+            // Update the shared reference to the new file input
             const newInput = dropZone.querySelector('#file-input');
-            dropZone.addEventListener('click', () => newInput.click(), { once: true });
+            currentFileInput = newInput;
             newInput.addEventListener('change', (e) => {
                 if (e.target.files.length) handleFile(e.target.files[0]);
             });

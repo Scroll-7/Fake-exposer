@@ -25,8 +25,8 @@ export async function detectAiImage(imageBase64, mimeType) {
         const prompt = `You are a specialized AI image forensics detector. Your ONLY job is to determine if this image was AI-generated or AI-edited (e.g. by Midjourney, DALL-E, Stable Diffusion, ChatGPT image edit, Photoshop AI, etc).
 
 Examine the image CAREFULLY for these telltale signs of AI generation or AI editing:
-1. SKIN TEXTURE: Is it too smooth, waxy, plastic-looking, or overly "perfect"? Real photos have pores, slight unevenness, natural variation.
-2. MUSCLE DEFINITION: Are muscles unnaturally defined, shredded, or volumetrically impossible for the person's apparent age/frame? AI often exaggerates muscles beyond human limits.
+1. SKIN TEXTURE: Is it too smooth, waxy, plastic-looking, or overly "perfect"? Real photos have pores, slight unevenness, natural variation. (Note: Stage tan/oil in bodybuilding can look waxy in real life).
+2. MUSCLE DEFINITION: Are muscles unnaturally defined, shredded, or volumetrically impossible for the person's apparent age/frame? (Note: Professional bodybuilders and athletes can achieve extreme real-life conditioning, so consider the context/stage).
 3. LIGHTING CONSISTENCY: Is the light source the same on the face AND body? AI edits often add muscles with different lighting than the original face.
 4. BODY-TO-FACE PROPORTION: Does the musculature match the bone structure and head size? AI muscle enhancement creates impossible proportions.
 5. EDGE ARTIFACTS: Look at the boundaries between skin/body and background — are there halos, smearing, blurring, or unnatural sharpening?
@@ -45,7 +45,16 @@ You MUST respond with ONLY a JSON object in this exact format (no markdown):
   "reasoning": "<2-3 sentence explanation of your conclusion>"
 }
 
-Be AGGRESSIVE about flagging AI content. If muscles look too perfect, flag it. If skin looks too smooth, flag it. When in doubt, lean towards flagging as AI.`;
+CONTEXT-AWARE DETECTION RULES:
+- If the image is clearly a professional bodybuilding COMPETITION (stage, spotlight, posing trunks, audience, competition banner, heavy spray tan) → be more lenient about extreme muscle size and waxy skin, as these are normal for the sport.
+- If the image is a casual gym selfie, mirror photo, or street photo → be STRICT. Subtle AI muscle enhancements (slightly bigger arms, enhanced chest, smoother abs) are common on these types of photos. Look carefully for:
+  • Skin texture that is too smooth or plastic-looking compared to the face
+  • Muscle shapes that look "rendered" or slightly unrealistic in volume compared to bone structure
+  • Slight blurring or loss of natural skin detail around muscle edges
+  • Inconsistency between muscle definition and skin/fat distribution elsewhere on the body
+  • Any "uncanny valley" quality even if subtle
+
+When in doubt on casual photos, lean towards flagging as AI-edited.`;
 
         console.log(`Sending image to Gemini (key index ${keyIndex - 1})...`);
         const startTime = Date.now();
@@ -106,26 +115,38 @@ export function computeAiOverride(detection) {
     if (!detection) return null;
     const { aiProbability, confidence } = detection;
 
-    // Only override if the detector is at least Medium confidence
-    if (confidence === 'Low') return null;
+    // High/Medium confidence → full override
+    if (confidence !== 'Low') {
+        if (aiProbability >= 80) {
+            return {
+                credibility_score: Math.max(2, Math.round(100 - aiProbability)),
+                verdict: `AI-Generated / Fake (${aiProbability}% confidence)`,
+                ai_probability: aiProbability,
+                ai_artifacts: detection.artifacts,
+                ai_reasoning: detection.reasoning,
+            };
+        }
+        if (aiProbability >= 55) {
+            return {
+                credibility_score: Math.round((100 - aiProbability) * 0.5),
+                verdict: `Likely AI-Generated (${aiProbability}% confidence)`,
+                ai_probability: aiProbability,
+                ai_artifacts: detection.artifacts,
+                ai_reasoning: detection.reasoning,
+            };
+        }
+    }
 
-    if (aiProbability >= 80) {
+    // Low confidence but still high probability → apply a softer override (don't fully trust Groq)
+    if (confidence === 'Low' && aiProbability >= 80) {
         return {
-            credibility_score: Math.max(2, Math.round(100 - aiProbability)),
-            verdict: `AI-Generated / Fake (${aiProbability}% confidence)`,
+            credibility_score: Math.max(10, Math.round((100 - aiProbability) * 1.5)),
+            verdict: `Possibly AI-Generated (${aiProbability}% AI probability, low confidence)`,
             ai_probability: aiProbability,
             ai_artifacts: detection.artifacts,
             ai_reasoning: detection.reasoning,
         };
     }
-    if (aiProbability >= 55) {
-        return {
-            credibility_score: Math.round((100 - aiProbability) * 0.5),
-            verdict: `Likely AI-Generated (${aiProbability}% confidence)`,
-            ai_probability: aiProbability,
-            ai_artifacts: detection.artifacts,
-            ai_reasoning: detection.reasoning,
-        };
-    }
+
     return null;
 }
