@@ -1,26 +1,26 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import hpp from 'hpp';
+import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 
 import { analyzeContent, analyzeImage } from './services/groq.js';
 import { scrapeUrl } from './services/scraper.js';
 import fs from 'fs';
 import crypto from 'crypto';
 
-// Initialize simple file-based cache for expensive image analysis
-const CACHE_FILE = path.join(__dirname, 'image_cache.json');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// In-memory cache — always starts fresh on each server boot.
+// This prevents stale AI results from a previous session being returned forever.
 let imageCache = {};
-try {
-    if (fs.existsSync(CACHE_FILE)) {
-        imageCache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-    }
-} catch (e) {
-    console.error("Failed to load image cache:", e);
-}
 
 function saveCache() {
     try {
@@ -32,15 +32,22 @@ function saveCache() {
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// --- Startup Security Validation ---
+if (!process.env.GROQ_API_KEY) {
+    console.error("🚨 CRITICAL SECURITY ERROR: GROQ_API_KEY is missing from .env file!");
+    console.error("Shutting down the server to prevent unauthenticated bypasses or errors.");
+    process.exit(1);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middlewares
+app.use(helmet()); // Secure HTTP headers
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Prevent huge payload DoS
+app.use(hpp()); // Prevent HTTP Parameter Pollution attacks
+app.use(morgan('combined')); // Detailed access logging for security audits
 app.use(express.static('public'));
 
 // --- Rate Limiting ---
@@ -56,9 +63,21 @@ const apiLimiter = rateLimit({
 // Apply rate limiting specifically to the analysis endpoints
 app.use('/api/analyze/', apiLimiter);
 
-// Configure multer for image uploads
+// Configure multer for image uploads with a strict 5MB limit and MIME type filtering
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const upload = multer({ dest: UPLOADS_DIR });
+const upload = multer({ 
+    dest: UPLOADS_DIR,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5 Megabytes limit
+    fileFilter: (req, file, cb) => {
+        // Strict MIME type checking: only allow JPEG, PNG, WEBP, and GIF
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Invalid file type. Only JPG, PNG, WEBP, and GIF are allowed.'));
+        }
+    }
+});
 
 // --- Background Cleanup Job ---
 // Automatically clean up any stuck files in the uploads folder older than 1 hour.
@@ -236,6 +255,24 @@ app.post('/api/analyze/image', upload.single('image'), async (req, res) => {
     }
 });
 
+// --- Global Error Handler ---
+// Catch Multer limit errors and prevent HTML crash pages
+app.use((err, req, res, next) => {
+    if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ error: 'File too large. Maximum size is 5MB.' });
+        }
+        if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+            return res.status(400).json({ error: err.field || 'Invalid file uploaded. Please upload a valid image (JPG, PNG, WEBP).' });
+        }
+        return res.status(400).json({ error: `Upload error: ${err.message}` });
+    } else if (err) {
+        console.error("Global Error:", err);
+        return res.status(500).json({ error: 'An unexpected server error occurred.' });
+    }
+    next();
+});
+
 function startServer(port) {
     const server = app.listen(port, () => {
         console.log(`Server running on http://localhost:${port}`);
@@ -254,5 +291,25 @@ function startServer(port) {
         }
     });
 }
+
+// --- Start Python ML APIs Automatically ---
+const textApiProcess = spawn('python', ['python_api.py'], { cwd: __dirname });
+textApiProcess.stdout.on('data', (data) => console.log(`[ML Text API] ${data.toString().trim()}`));
+textApiProcess.stderr.on('data', (data) => console.error(`[ML Text API Error] ${data.toString().trim()}`));
+
+const imageApiProcess = spawn('python', ['animal_api.py'], { cwd: __dirname });
+imageApiProcess.stdout.on('data', (data) => console.log(`[ML Image API] ${data.toString().trim()}`));
+imageApiProcess.stderr.on('data', (data) => console.error(`[ML Image API Error] ${data.toString().trim()}`));
+
+// Kill Python processes when Node.js shuts down
+process.on('exit', () => {
+    textApiProcess.kill();
+    imageApiProcess.kill();
+});
+process.on('SIGINT', () => {
+    textApiProcess.kill();
+    imageApiProcess.kill();
+    process.exit();
+});
 
 startServer(PORT);
