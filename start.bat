@@ -1,0 +1,13 @@
+@echo off
+echo Starting Fake News Detector Services...
+
+echo Starting Python Text Analysis API (Port 8000)...
+start "Text API" cmd /k "python python_api.py"
+
+echo Starting Python Image Analysis API (Port 8001)...
+start "Image API" cmd /k "python animal_api.py"
+
+echo Starting Node.js Backend Server (Port 3001)...
+start "Node Server" cmd /k "npm start"
+
+echo All services launched!

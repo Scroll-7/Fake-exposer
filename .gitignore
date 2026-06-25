@@ -1,2 +1,17 @@
 node_modules/
 .env
+
+# Datasets
+*.zip
+*.csv
+
+# ML Models
+*.pkl
+*.onnx
+*.onnx.data
+
+# Temporary Files and Caches
+uploads/
+__pycache__/
+test_cat.png
+image_cache.json
