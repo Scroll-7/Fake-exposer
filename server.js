@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
 import hpp from 'hpp';
@@ -14,10 +15,15 @@ import { analyzeContent, analyzeImage } from './services/groq.js';
 import { scrapeUrl } from './services/scraper.js';
 import fs from 'fs';
 
+// In test mode, do NOT load .env so the test-controlled env vars are used
+if (process.env.NODE_ENV !== 'test') {
+    dotenv.config();
+} else {
+    console.log('[Test mode] Skipping .env loading.');
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-dotenv.config();
 
 // --- Groq API Key Check (non-fatal) ---
 // Server starts regardless — Groq-dependent endpoints return a descriptive error.
@@ -32,12 +38,13 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middlewares
+app.use(compression()); // gzip all responses — smaller payloads, faster loads
 app.use(helmet());
 app.use(cors({ origin: false })); // Same-origin only — frontend is served by Express
 app.use(express.json({ limit: '10mb' })); // Prevent huge payload DoS
 app.use(hpp()); // Prevent HTTP Parameter Pollution attacks
 app.use(morgan('combined')); // Detailed access logging for security audits
-app.use(express.static('public'));
+app.use(express.static('public', { maxAge: '7d' })); // Cache static assets 7 days
 
 // --- Rate Limiting ---
 // Protect against bot spam and API cost drain by limiting IPs to 60 requests per hour.
@@ -71,7 +78,8 @@ const upload = multer({
 
 // --- Background Cleanup Job ---
 // Automatically clean up any stuck files in the uploads folder older than 1 hour.
-setInterval(() => {
+// `.unref()` allows the process to exit cleanly even if this timer is still active.
+const cleanupTimer = setInterval(() => {
     fs.readdir(UPLOADS_DIR, (err, files) => {
         if (err) return;
         const now = Date.now();
@@ -79,7 +87,6 @@ setInterval(() => {
             const filePath = path.join(UPLOADS_DIR, file);
             fs.stat(filePath, (err, stats) => {
                 if (err) return;
-                // If file is older than 1 hour (3600000 ms), delete it
                 if (now - stats.mtimeMs > 3600000) {
                     fs.unlink(filePath, unlinkErr => {
                         if (!unlinkErr) console.log(`🧹 Background cleanup: deleted stale file ${file}`);
@@ -88,7 +95,8 @@ setInterval(() => {
             });
         });
     });
-}, 3600000); // Run every hour
+}, 3600000);
+cleanupTimer.unref();
 
 // If the AI identified a highly trusted source, boost credibility score by 50% (capped at 100)
 // and inject a green flag noting the source.
@@ -253,7 +261,8 @@ app.use((err, req, res, next) => {
 
 function startServer(port) {
     const server = app.listen(port, () => {
-        console.log(`Server running on http://localhost:${port}`);
+        const actualPort = server.address().port;
+        console.log(`Server running on http://localhost:${actualPort}`);
     });
 
     server.on('error', async (err) => {
@@ -328,17 +337,23 @@ if (missingModels.length > 0) {
 }
 
 // --- Start Python ML APIs Automatically ---
-const textApiProcess = spawn('python', ['python_api.py'], { cwd: __dirname });
-textApiProcess.stdout.on('data', (data) => console.log(`[ML Text API] ${data.toString().trim()}`));
-textApiProcess.stderr.on('data', (data) => console.error(`[ML Text API Error] ${data.toString().trim()}`));
+// Skip spawning in test mode to keep integration tests fast
+let textApiProcess = null, imageApiProcess = null, faceApiProcess = null;
+if (process.env.NODE_ENV !== 'test') {
+    textApiProcess = spawn('python', ['python_api.py'], { cwd: __dirname });
+    textApiProcess.stdout.on('data', (data) => console.log(`[ML Text API] ${data.toString().trim()}`));
+    textApiProcess.stderr.on('data', (data) => console.error(`[ML Text API Error] ${data.toString().trim()}`));
 
-const imageApiProcess = spawn('python', ['animal_api.py'], { cwd: __dirname });
-imageApiProcess.stdout.on('data', (data) => console.log(`[ML Image API] ${data.toString().trim()}`));
-imageApiProcess.stderr.on('data', (data) => console.error(`[ML Image API Error] ${data.toString().trim()}`));
+    imageApiProcess = spawn('python', ['animal_api.py'], { cwd: __dirname });
+    imageApiProcess.stdout.on('data', (data) => console.log(`[ML Image API] ${data.toString().trim()}`));
+    imageApiProcess.stderr.on('data', (data) => console.error(`[ML Image API Error] ${data.toString().trim()}`));
 
-const faceApiProcess = spawn('python', ['face_api.py'], { cwd: __dirname });
-faceApiProcess.stdout.on('data', (data) => console.log(`[Face API] ${data.toString().trim()}`));
-faceApiProcess.stderr.on('data', (data) => console.error(`[Face API Error] ${data.toString().trim()}`));
+    faceApiProcess = spawn('python', ['face_api.py'], { cwd: __dirname });
+    faceApiProcess.stdout.on('data', (data) => console.log(`[Face API] ${data.toString().trim()}`));
+    faceApiProcess.stderr.on('data', (data) => console.error(`[Face API Error] ${data.toString().trim()}`));
+} else {
+    console.log('[Test mode] Skipping Python API spawning.');
+}
 
 const API_HEALTH_URLS = [
     { name: 'Text ML', url: 'http://127.0.0.1:8000/health' },
@@ -363,10 +378,14 @@ async function checkApiHealth() {
 }
 
 // Health check every 60 seconds, first check after 5s
-setTimeout(async () => {
-    await checkApiHealth();
-    setInterval(checkApiHealth, 60000);
-}, 5000);
+// Skip in test mode so the process exits cleanly after integration tests
+if (process.env.NODE_ENV !== 'test') {
+    setTimeout(async () => {
+        await checkApiHealth();
+        const healthInterval = setInterval(checkApiHealth, 60000);
+        healthInterval.unref();
+    }, 5000);
+}
 
 // Kill Python processes when Node.js shuts down
 function killAll() {
@@ -377,4 +396,10 @@ function killAll() {
 process.on('exit', killAll);
 process.on('SIGINT', () => { killAll(); process.exit(); });
 
-startServer(PORT);
+// Only start when run directly (not imported as a module)
+const isMainModule = process.argv[1] && (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}` || !process.argv[1]);
+if (isMainModule || process.env.START_SERVER === '1') {
+    startServer(PORT);
+}
+
+export default app;

@@ -9,95 +9,6 @@ dotenv.config();
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 /**
- * Step 1.5b — Dedicated Gemini Vision sports identity check.
- * Only called when a sports jersey is detected in the description but the local KB
- * didn't find a match (player or team not in KB). Uses a narrow, focused prompt.
- *
- * Returns { player, jerseyTeam, everPlayedThere, confidence, knownClubs } or null.
- */
-async function geminiSportsIdentityCheck(imageBase64, mimeType, faceIdOverride = null) {
-    // We try multiple models because the free tier can get rate limited easily
-    const key = process.env.GEMINI_API_KEYS?.split(',')[0] || process.env.GEMINI_API_KEY;
-    if (!key) {
-        console.log('[Sports Check] Skipping Gemini check: No API key found.');
-        return null;
-    }
-
-    const faceInstruction = faceIdOverride 
-        ? `We have cryptographically verified the face using a biometric scanner. The person is exactly: ${faceIdOverride}. DO NOT guess any other name. Set player_identified to "${faceIdOverride}".`
-        : `Who is the person whose face is in the image? DO NOT say 'Unknown'. If it looks like Neymar, say Neymar. If you are not sure, guess the closest famous player (e.g. Neymar, Messi, Ronaldo).`;
-
-    const prompt = `You are a sports identity verification expert. Your ONLY job is to:
-1. Identify WHO this sports player looks like based strictly on their FACIAL FEATURES and hair. IGNORE the jersey they are wearing. ${faceInstruction}
-2. Identify WHAT TEAM JERSEY they are wearing (read the badge, sponsor, or kit colors). Do not let the team jersey influence your facial recognition.
-3. Determine if this player has EVER played for that team at any point in their career.
-
-Respond ONLY with valid JSON (no markdown):
-{
-  "player_identified": "<full name or 'Unknown'>",
-  "player_confidence": <integer 0-100>,
-  "jersey_team": "<team name or 'Unknown'>",
-  "jersey_confidence": <integer 0-100>,
-  "ever_played_there": <true | false | null>,
-  "known_clubs": ["<club1>", "<club2>", ...],
-  "mismatch": <true | false>,
-  "reasoning": "<1-2 sentences>"
-}
-
-RULES:
-- If ever_played_there is false, set mismatch to true.
-- If either player or team is Unknown, set mismatch to false (cannot confirm either way).
-- It is okay to name the player based on facial resemblance. We will cross-reference it later.`;
-
-    try {
-        const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
-        for (const model of MODELS) {
-            console.log(`[Sports Check] Trying model ${model}...`);
-            const r = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [
-                            { text: prompt },
-                            { inline_data: { mime_type: mimeType, data: imageBase64 } }
-                        ]}],
-                        generationConfig: { 
-                            response_mime_type: "application/json", 
-                            maxOutputTokens: 1000 
-                        }
-                    }),
-                    signal: AbortSignal.timeout(30000)
-                }
-            );
-            if (!r.ok) {
-                console.error(`[Sports Check] ${model} failed:`, r.status, await r.text());
-                continue;
-            }
-            const data = await r.json();
-            let raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            raw = raw.replace(/```json/g, '').replace(/```/g, '').trim();
-            if (!raw) {
-                console.error(`[Sports Check] ${model} returned empty content (possibly blocked):`, JSON.stringify(data));
-                continue; // Try next model
-            }
-            console.log(`[Sports Check] RAW JSON from ${model}:`, raw);
-            console.log(`[Sports Check] Finish Reason:`, data?.candidates?.[0]?.finishReason);
-            if (data?.candidates?.[0]?.finishReason === 'SAFETY') {
-                console.error(`[Sports Check] ${model} blocked by safety filters!`);
-            }
-            const parsed = JSON.parse(raw);
-            console.log(`[Sports ID] Gemini (${model}): player=${parsed.player_identified} (${parsed.player_confidence}%) jersey=${parsed.jersey_team} mismatch=${parsed.mismatch}`);
-            return parsed;
-        }
-    } catch (e) {
-        console.error("Gemini Sports ID Error:", e);
-    }
-    return null;
-}
-
-/**
  * Rule-based heuristic: detects if the original filename contains obvious AI generator artifacts.
  */
 const ANALYSIS_SCHEMA = `
@@ -271,65 +182,61 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
 
     const dataUrl = `data:${mimeType};base64,${imageBase64}`;
 
-    // ── STEP 0: Dedicated Facial Recognition (Python Microservice) ──
-    let faceIdOverride = null;
-    try {
-        console.log('[FaceID] Sending image to local Python Face API...');
-        
-        // Convert base64 to Blob/File for FormData
-        const buffer = Buffer.from(imageBase64, 'base64');
-        const formData = new FormData();
-        const blob = new Blob([buffer], { type: mimeType });
-        formData.append('file', blob, 'upload.jpg');
-        
-        const faceRes = await fetch('http://127.0.0.1:8002/recognize', {
-            method: 'POST',
-            body: formData,
-            signal: AbortSignal.timeout(10000)
-        });
-        
-        if (faceRes.ok) {
-            const faceData = await faceRes.json();
-            if (faceData && faceData.player) {
-                faceIdOverride = faceData.player;
-                console.log(`[FaceID] MATCH FOUND! The person is exactly: ${faceIdOverride}`);
-                // Append this ground-truth identity to the user context so the fact-checker uses it
-                userContext = (userContext ? userContext + ". " : "") + `[GROUND TRUTH FACE ID] The face in this image mathematically matches ${faceIdOverride}. DO NOT guess the name, it is absolutely ${faceIdOverride}.`;
-            } else {
-                console.log(`[FaceID] No match found in known_faces dataset: ${faceData.reason || 'None'}`);
-            }
-        } else {
-            console.warn('[FaceID] API returned error:', faceRes.status);
-        }
-    } catch (e) {
-        console.warn('[FaceID] Failed to call Python Face API:', e.message);
-    }
-
-    // ── PRE-STEP: Dedicated AI image detection (Gemini Vision forensics) ──
-    const aiDetection = await detectAiImage(imageBase64, mimeType);
-    const aiOverride = computeAiOverride(aiDetection);
-
-    // Build filename context note if the name looks suspicious
+    // Build filename context note if the name looks suspicious (instant, no async)
     const filenameNote = originalName
         ? `\n\nFILE METADATA: The original filename is "${originalName}". If this name contains references to AI tools (chatgpt, midjourney, dalle, stable diffusion, flux, etc.) or words like "fake", "edited", "enhanced", "generated" — treat it as a STRONG signal that the image is AI-generated or manipulated and score accordingly.`
         : '';
 
-    // ── STEP 1: Rich visual description for context + search ──
-    let imageDescription = '';
-    console.log(`Starting Groq step 1 (Description)...`);
-    const descStartTime = Date.now();
-    try {
-        const userContextNote = userContext
-            ? `\n\nIMPORTANT — The user says this image: "${userContext}". Keep this in mind.`
-            : '';
+    // ── PARALLEL: Face API + Gemini detection + Groq Step 1 description ──
+    // All three are independent — run concurrently to cut ~10s off the total time.
+    const [faceIdOverride, aiDetection, imageDescription] = await Promise.all([
 
-        const descCompletion = await groqVisionRequest([
-            {
-                role: "user",
-                content: [
+        // Face API (Python microservice)
+        (async () => {
+            try {
+                console.log('[FaceID] Sending image to local Python Face API...');
+                const buffer = Buffer.from(imageBase64, 'base64');
+                const FormData = (await import('form-data')).default;
+                const form = new FormData();
+                form.append('file', buffer, { filename: 'upload.jpg', contentType: mimeType });
+                const faceRes = await fetch('http://127.0.0.1:8002/recognize', {
+                    method: 'POST', body: form, headers: form.getHeaders(),
+                    signal: AbortSignal.timeout(10000)
+                });
+                if (faceRes.ok) {
+                    const faceData = await faceRes.json();
+                    if (faceData && faceData.player) {
+                        console.log(`[FaceID] MATCH FOUND! The person is exactly: ${faceData.player}`);
+                        return faceData.player;
+                    }
+                    console.log(`[FaceID] No match found in known_faces dataset: ${faceData.reason || 'None'}`);
+                } else {
+                    console.warn('[FaceID] API returned error:', faceRes.status);
+                }
+            } catch (e) {
+                console.warn('[FaceID] Failed to call Python Face API:', e.message);
+            }
+            return null;
+        })(),
+
+        // Gemini AI image forensics
+        detectAiImage(imageBase64, mimeType),
+
+        // Step 1: Rich visual description
+        (async () => {
+            console.log(`Starting Groq step 1 (Description)...`);
+            const descStartTime = Date.now();
+            try {
+                const userContextNote = userContext
+                    ? `\n\nIMPORTANT — The user says this image: "${userContext}". Keep this in mind.`
+                    : '';
+                const descCompletion = await groqVisionRequest([
                     {
-                        type: "text",
-                        text: `You are a visual forensics expert. Analyze this image thoroughly and answer ALL of the following questions:${userContextNote}${filenameNote}
+                        role: "user",
+                        content: [
+                            {
+                                type: "text",
+                                text: `You are a visual forensics expert. Analyze this image thoroughly and answer ALL of the following questions:${userContextNote}${filenameNote}
 
 --- GENERAL AI / MANIPULATION DETECTION ---
 1. Does this look AI-generated or AI-edited? Look for:
@@ -344,56 +251,47 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
 3. Are there any blending artifacts or unnatural boundary transitions between body parts or between the person and the background?
 
 --- IDENTITY CHECK (SPORTS IMAGES ONLY) ---
-4. If the person is wearing a sports jersey: identify the player based strictly on their FACIAL FEATURES and hair. IGNORE the jersey they are wearing when identifying them, as the image might be a photoshop. Provide the most likely name of the famous football/soccer player if there is a strong facial resemblance. CRITICAL WARNING: Do not mistake young Neymar for Gonzalo Higuain just because of a Real Madrid jersey. If it has Neymar's face/hair, call it Neymar! Also state what team jersey they wear, and whether that person actually plays for that team.
+4. If the person is wearing a sports jersey: identify the TEAM from the badge, sponsor text, or jersey colors/pattern. ONLY identify the player by name if their NAME is actually visible on the jersey (e.g., printed on the back). If no name is readable, say "Player name not visible in image". For the team, be specific: read the badge, sponsor logo, or text. Do NOT guess the player's identity based on facial features — facial recognition from AI is unreliable and frequently wrong.
 
 --- SUMMARY ---
 6. Write a 2-3 sentence summary of what the image shows and whether it appears authentic or manipulated.
 
 Be very specific and honest about uncertainty.`
-                    },
-                    { type: "image_url", image_url: { url: dataUrl } }
-                ]
+                            },
+                            { type: "image_url", image_url: { url: dataUrl } }
+                        ]
+                    }
+                ], 250);
+                const desc = descCompletion.choices[0]?.message?.content || '';
+                console.log(`Groq Description completed in ${Date.now() - descStartTime}ms. Output length: ${desc.length}`);
+                return desc;
+            } catch (err) {
+                console.error(`Groq Description failed after ${Date.now() - descStartTime}ms:`, err.message);
+                return '';
             }
-        ], 500);
-        imageDescription = descCompletion.choices[0]?.message?.content || '';
-        console.log(`Groq Description completed in ${Date.now() - descStartTime}ms. Output length: ${imageDescription.length}`);
-    } catch (err) {
-        console.error(`Groq Description failed after ${Date.now() - descStartTime}ms:`, err.message);
-        // Continue without description — fall back to visual-only analysis
-    }
+        })(),
+    ]);
 
-    // ── STEP 2: Web search to fact-check the image content ──
-    let searchResults = "No recent news found.";
-    if (imageDescription) {
-        searchResults = await searchWeb(imageDescription);
-    }
+    // Compute AI override from Gemini result (instant, local)
+    const aiOverride = computeAiOverride(aiDetection);
+
+    // Build face ID context for Step 3 (no longer modifying userContext in-place)
+    const faceIdContext = faceIdOverride
+        ? `[GROUND TRUTH FACE ID] The face in this image mathematically matches ${faceIdOverride}. DO NOT guess the name, it is absolutely ${faceIdOverride}.`
+        : '';
+
+    // Note: searchWeb() is intentionally omitted from the image analysis path.
+    // Web search is designed for text fact-checking — for images it adds 5-10s
+    // of unreliable DuckDuckGo scraping with negligible factual value.
+    const searchResults = "No recent news found.";
 
     // ── STEP 1.5a: Local KB jersey mismatch check on Step 1 description (offline, instant) ──
     let jerseyMismatch = detectJerseyMismatch(imageDescription);
 
-    // ── STEP 1.5b: Dedicated Gemini sports identity check ──
-    // ALWAYS run when ANY sports/person/athletic content is detected,
-    // regardless of whether the local KB found a match.
-    // This is the PRIMARY mechanism for catching unknown-player mismatches.
-    let geminiSportsResult = null;
-    const descHasSports = imageDescription && /jersey|kit|shirt|bwin|adidas|nike|puma|sponsor|badge|crest|soccer|football|footballer|athlete|player|uniform|team|club|striker|goalkeeper|defender|midfielder|sport|red and black|stripes|rossoneri/i.test(imageDescription);
-    if (descHasSports) {
-        console.log('[Sports Check] Sports content detected in description — running Gemini sports identity check...');
-        geminiSportsResult = await geminiSportsIdentityCheck(imageBase64, mimeType, faceIdOverride);
-
-        // If Gemini identified a player + team, feed that through local KB too
-        // This catches cases where Step 1 didn't name the player but Gemini did.
-        if (geminiSportsResult && !jerseyMismatch) {
-            const geminiText = `${geminiSportsResult.player_identified || ''} ${geminiSportsResult.jersey_team || ''}`;
-            const geminiKB = detectJerseyMismatch(geminiText);
-            if (geminiKB) {
-                console.log(`[Sports Check] Gemini result fed through local KB → MISMATCH CONFIRMED: ${geminiKB.player} + ${geminiKB.jerseyTeam}`);
-                jerseyMismatch = geminiKB;
-            }
-        }
-    } else {
-        console.log('[Sports Check] No sports content in description — skipping Gemini sports check.');
-    }
+    // Note: The Gemini sports identity check has been removed.
+    // Facial recognition from AI is unreliable and frequently misidentifies players.
+    // The system now only flags jersey mismatches when the player's NAME is literally
+    // visible in the image (readable text on jersey) or provided by the Face API.
 
     // ── STEP 2.5: Rule-based heuristics ──
     const physiqueWarning = detectExtremePhysiqueCasualSetting(imageDescription);
@@ -414,9 +312,10 @@ Be very specific and honest about uncertainty.`
     const anyHeuristicWarning = physiqueWarning || portraitWarning || filenameWarning;
 
     // ── STEP 3: Full analysis with both visual + factual context ──
-    const userContextSection = userContext || filenameNote || anyHeuristicWarning
+    const userContextSection = userContext || filenameNote || faceIdContext || anyHeuristicWarning
         ? `--- USER-PROVIDED CONTEXT (TREAT AS A STRONG SIGNAL) ---
     ${userContext ? `The person who uploaded this image says: "${userContext}"` : ''}
+    ${faceIdContext ? `\n${faceIdContext}` : ''}
     ${filenameNote}
     ${physiqueWarning ? `\n⚠️ AUTOMATIC HEURISTIC WARNING (MUSCLE): ${physiqueWarning}\nThis combination (extreme competition-level physique + casual everyday setting) is a PRIMARY indicator of AI muscle enhancement. You MUST reflect this suspicion in your score and verdict. Score should be 30 or lower.` : ''}
     ${portraitWarning ? `\n⚠️ AUTOMATIC HEURISTIC WARNING (PORTRAIT): ${portraitWarning}\nThis image matches the signature of AI-generated portrait photos from tools like Gemini Image, DALL-E, and Midjourney. You MUST reflect this suspicion. Score should be 25 or lower unless you find specific real-world evidence this is genuine.` : ''}
@@ -529,11 +428,10 @@ Be very specific and honest about uncertainty.`
       - Similarity to a celebrity is NOT identification.
 
       ── SPORTS JERSEY FACT-CHECK (only if applicable) ──
-      If the person IS a highly-recognized athlete in a sports jersey:
-      1. Confirm their identity (only if 80%+ certain)
-      2. Confirm what team jersey they wear
-      3. Cross-reference: does this player actually play for that team?
-      4. If there's a mismatch → score 5-20, verdict "Fake / Manipulated - Player Not at This Club"
+      Identify the TEAM from the jersey badge/colors/sponsor text.
+      ONLY identify the player by name if their NAME is actually visible on the jersey.
+      If no name is visible, say "Player name not visible" — do NOT guess.
+      If you CAN read a player name AND it does not match the team → score 5-20, verdict "Fake / Manipulated - Player Not at This Club"
 
     --- VISUAL ANALYSIS FROM STEP 1 ---
     ${imageDescription || 'No description available.'}
@@ -567,7 +465,7 @@ Be very specific and honest about uncertainty.`
         // ── POST-STEP-3 RE-CHECK FOR JERSEY MISMATCH ──
         // Sometimes Step 1 misses the player name, but the LLM in Step 3 figures it out.
         // We re-run the local KB check on the LLM's own summary and verdict.
-        if (!jerseyMismatch && !geminiSportsResult?.mismatch) {
+        if (!jerseyMismatch) {
             const combinedLlmText = `${llmResult.summary || ''} ${llmResult.verdict || ''} ${(llmResult.red_flags || []).join(' ')}`;
             const postCheckMismatch = detectJerseyMismatch(combinedLlmText);
             if (postCheckMismatch) {
@@ -637,8 +535,7 @@ Be very specific and honest about uncertainty.`
         }
 
         // ── JERSEY MISMATCH CAP (highest priority after AI override) ──
-        // If the local KB or Gemini sports ID confirmed a player/team mismatch,
-        // hard-cap the score regardless of what Groq said about the photo quality.
+        // If the local KB confirmed a player/team mismatch, hard-cap the score.
 
         if (jerseyMismatch) {
             const score = 8;
@@ -657,32 +554,6 @@ Be very specific and honest about uncertainty.`
                 ],
                 green_flags: [],
                 summary: `${jerseyMismatch.mismatchMsg} ${llmResult.summary || ''}`.trim(),
-            };
-        }
-
-        // Gemini sports identity check mismatch
-        if (geminiSportsResult?.mismatch &&
-            geminiSportsResult.player_identified !== 'Unknown' &&
-            geminiSportsResult.jersey_team !== 'Unknown' &&
-            geminiSportsResult.player_confidence >= 70) {
-            const score = 10;
-            const knownStr = (geminiSportsResult.known_clubs || []).join(', ') || 'see career history';
-            console.log(`⛔ Gemini sports ID mismatch cap: ${geminiSportsResult.player_identified} in ${geminiSportsResult.jersey_team} — score → ${score}`);
-            return {
-                ...llmResult,
-                credibility_score: score,
-                verdict: `Fake / Manipulated — ${geminiSportsResult.player_identified} never played for ${geminiSportsResult.jersey_team}`,
-                is_trusted_source: false, // Forcibly remove trusted boost for FAKES
-                trusted_source_name: null,
-                red_flags: [
-                    `⚽ Jersey mismatch (Gemini Sports ID): ${geminiSportsResult.player_identified} has NEVER played for ${geminiSportsResult.jersey_team}`,
-                    `📋 Known clubs: ${knownStr}`,
-                    `🔍 Gemini identification confidence: ${geminiSportsResult.player_confidence}%`,
-                    'This is a fake sports photo — real photograph with manipulated or misleading jersey/context',
-                    ...(llmResult.red_flags || []),
-                ],
-                green_flags: [],
-                summary: `${geminiSportsResult.reasoning || ''} ${llmResult.summary || ''}`.trim(),
             };
         }
 

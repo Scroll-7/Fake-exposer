@@ -577,6 +577,90 @@ textarea:focus, input[type="url"]:focus {
     to { opacity: 0; transform: translateY(-50px); }
 }
 
+/* ===================== Progress Bar ===================== */
+.progress-section {
+    width: 100%;
+    max-width: 800px;
+    animation: slideUp 0.4s ease;
+}
+
+.progress-panel {
+    text-align: center;
+    padding: 1.5rem 2rem;
+}
+
+.progress-title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: var(--text-muted);
+}
+
+.progress-bar-track {
+    width: 100%;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--primary), #a855f7);
+    border-radius: 999px;
+    transition: width 0.5s ease;
+}
+
+.progress-steps {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.25rem;
+}
+
+.step {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    opacity: 0.4;
+    transition: all 0.4s ease;
+    flex: 1;
+    text-align: center;
+    position: relative;
+}
+
+.step::before {
+    content: '';
+    display: block;
+    width: 10px;
+    height: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 50%;
+    margin: 0 auto 6px auto;
+    transition: all 0.4s ease;
+}
+
+.step.active {
+    opacity: 1;
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.step.active::before {
+    background: var(--primary);
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.6);
+}
+
+.step.done {
+    opacity: 0.8;
+    color: var(--green);
+}
+
+.step.done::before {
+    background: var(--green);
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+}
+
 /* ===================== Trusted Source Toggle ===================== */
 .trusted-source-toggle {
     margin: 0 0 16px 0;

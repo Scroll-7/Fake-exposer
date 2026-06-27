@@ -103,6 +103,70 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.readAsDataURL(file);
     }
 
+    // ── Progress Bar ──
+    const progressSection = document.getElementById('progress-section');
+    const progressFill = document.getElementById('progress-fill');
+    const progressTitle = document.getElementById('progress-title');
+    const progressSteps = document.getElementById('progress-steps');
+    let progressTimer = null;
+    let progressStep = 0;
+
+    function showProgress(title, steps) {
+        progressStep = 0;
+        progressTitle.textContent = title;
+        progressSteps.innerHTML = steps.map((s, i) =>
+            `<span class="step" data-step="${i}">${s}</span>`
+        ).join('');
+        progressSection.classList.remove('hidden');
+        progressFill.style.width = '0%';
+        // Mark first step active
+        const first = progressSteps.querySelector('[data-step="0"]');
+        if (first) first.classList.add('active');
+    }
+
+    function advanceProgress() {
+        const steps = progressSteps.querySelectorAll('.step');
+        if (progressStep < steps.length) {
+            steps[progressStep]?.classList.remove('active');
+            steps[progressStep]?.classList.add('done');
+        }
+        progressStep++;
+        if (progressStep < steps.length) {
+            steps[progressStep]?.classList.add('active');
+        }
+        const pct = Math.min(95, (progressStep / steps.length) * 100);
+        progressFill.style.width = `${pct}%`;
+    }
+
+    function completeProgress() {
+        if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+        const steps = progressSteps.querySelectorAll('.step');
+        steps.forEach(s => { s.classList.remove('active'); s.classList.add('done'); });
+        progressFill.style.width = '100%';
+        progressTitle.textContent = 'Complete';
+        setTimeout(() => {
+            progressSection.classList.add('hidden');
+        }, 800);
+    }
+
+    function hideProgress() {
+        if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+        progressSection.classList.add('hidden');
+    }
+
+    function simulateProgress(title, steps, intervalMs = 3000) {
+        showProgress(title, steps);
+        if (progressTimer) clearInterval(progressTimer);
+        progressTimer = setInterval(() => {
+            if (progressStep < steps.length - 1) {
+                advanceProgress();
+            } else {
+                clearInterval(progressTimer);
+                progressTimer = null;
+            }
+        }, intervalMs);
+    }
+
     // API Calls
     const analyzeTextBtn = document.getElementById('analyze-text-btn');
     const analyzeUrlBtn = document.getElementById('analyze-url-btn');
@@ -117,12 +181,14 @@ document.addEventListener('DOMContentLoaded', () => {
             return showToast('It looks like you pasted a link! Please use the "URL" tab instead.');
         }
 
+        simulateProgress('Fact-Checking...', ['Searching Web', 'Analyzing Content', 'Final Review'], 2500);
         await performAnalysis('/api/analyze/text', { text }, analyzeTextBtn);
     });
 
     analyzeUrlBtn.addEventListener('click', async () => {
         const url = document.getElementById('url-input').value;
         if (!url.trim() || !url.startsWith('http')) return showToast('Please enter a valid URL.');
+        simulateProgress('Analyzing URL...', ['Fetching Page', 'Extracting Text', 'Analyzing Content', 'Final Review'], 2500);
         await performAnalysis('/api/analyze/url', { url }, analyzeUrlBtn);
     });
 
@@ -137,6 +203,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (userContext) formData.append('context', userContext);
 
         setLoading(analyzeImageBtn, true);
+        simulateProgress('Analyzing Image...', ['Face ID', 'AI Detection', 'Describing Image', 'Final Analysis'], 4000);
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
         try {
@@ -148,9 +215,11 @@ document.addEventListener('DOMContentLoaded', () => {
             clearTimeout(timeoutId);
             const data = await res.json();
             if (data.error) throw new Error(data.error);
+            completeProgress();
             renderResults(data);
         } catch (error) {
             clearTimeout(timeoutId);
+            hideProgress();
             if (error.name === 'AbortError') {
                 showToast('Analysis timed out. Please try again.');
             } else {
@@ -171,8 +240,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const data = await res.json();
             if (data.error) throw new Error(data.error);
+            completeProgress();
             renderResults(data);
         } catch (error) {
+            hideProgress();
             showToast(error.message);
         } finally {
             setLoading(btn, false);

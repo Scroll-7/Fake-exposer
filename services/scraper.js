@@ -40,14 +40,34 @@ function extractSnippets(html) {
     return [];
 }
 
+async function searchJina(query) {
+    try {
+        const response = await fetch('https://s.jina.ai/' + encodeURIComponent(query), {
+            headers: {
+                'User-Agent': 'FakeNewsDetector/1.0',
+                'Accept': 'text/plain'
+            },
+            signal: AbortSignal.timeout(15000)
+        });
+        if (!response.ok) return null;
+        const text = await response.text();
+        if (!text || text.length < 50) return null;
+        // Jina returns markdown with line-item results — take first 3 non-empty lines
+        const lines = text.split('\n').filter(l => l.trim().length > 20 && !l.startsWith('!') && !l.startsWith('[')).slice(0, 3);
+        return lines.length > 0 ? lines.join('\n- ') : null;
+    } catch {
+        return null;
+    }
+}
+
 export async function searchWeb(query) {
     const errors = [];
-    const urls = [
-        { url: 'https://html.duckduckgo.com/html/', method: 'POST', body: 'q=' + encodeURIComponent(query) },
-        { url: 'https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(query), method: 'GET' },
-    ];
 
-    for (const endpoint of urls) {
+    // Try DuckDuckGo (lite endpoint first — simpler HTML, less likely to break)
+    for (const endpoint of [
+        { url: 'https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(query), method: 'GET' },
+        { url: 'https://html.duckduckgo.com/html/', method: 'POST', body: 'q=' + encodeURIComponent(query) },
+    ]) {
         try {
             const response = await fetch(endpoint.url, {
                 method: endpoint.method,
@@ -60,7 +80,7 @@ export async function searchWeb(query) {
             });
 
             const html = await response.text();
-            if (!html || html.length < 200) continue;
+            if (!html || html.length < 50) continue;
 
             const snippets = extractSnippets(html);
             if (snippets.length > 0) {
@@ -70,6 +90,10 @@ export async function searchWeb(query) {
             errors.push(err.message);
         }
     }
+
+    // Fallback: Jina AI search API
+    const jinaResult = await searchJina(query);
+    if (jinaResult) return jinaResult;
 
     console.error("Search failed:", errors.join('; '));
     return "No recent news found.";

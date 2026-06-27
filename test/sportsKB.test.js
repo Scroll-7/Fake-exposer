@@ -47,4 +47,31 @@ describe('detectJerseyMismatch', () => {
         const result = detectJerseyMismatch('Ronaldo wearing a Sporting CP jersey');
         assert.equal(result, null);
     });
+
+    it('detects valid: de Jong in Barcelona jersey', () => {
+        const result = detectJerseyMismatch('Frenkie de Jong wearing FC Barcelona jersey');
+        assert.equal(result, null);
+    });
+
+    it('detects mismatch: de Jong in Real Madrid jersey', () => {
+        const result = detectJerseyMismatch('Frenkie de Jong playing for Real Madrid');
+        assert.ok(result);
+        assert.equal(result.player, 'Frenkie De Jong');
+        assert.equal(result.jerseyTeam, 'Real Madrid');
+    });
+
+    it('detects mismatch: Olise in Barcelona jersey', () => {
+        const result = detectJerseyMismatch('Michael Olise posing in a Barcelona kit');
+        assert.ok(result);
+        assert.equal(result.player, 'Michael Olise');
+        assert.equal(result.jerseyTeam, 'FC Barcelona');
+        assert.ok(result.mismatchMsg.includes('NEVER played for FC Barcelona'));
+    });
+
+    it('detects mismatch: Olise alias in Barcelona jersey', () => {
+        const result = detectJerseyMismatch('Olise wearing Barcelona jersey');
+        assert.ok(result);
+        assert.equal(result.player, 'Olise');
+        assert.equal(result.jerseyTeam, 'FC Barcelona');
+    });
 });
