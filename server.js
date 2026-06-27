@@ -40,10 +40,11 @@ app.use(morgan('combined')); // Detailed access logging for security audits
 app.use(express.static('public'));
 
 // --- Rate Limiting ---
-// Protect against bot spam and API cost drain by limiting IPs to 15 requests per hour.
+// Protect against bot spam and API cost drain by limiting IPs to 60 requests per hour.
+// Image analysis takes ~30s, so 60/hr (≈1/min) leaves room for interactive use.
 const apiLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour window
-    max: 15, // limit each IP to 15 requests per windowMs
+    max: 60, // limit each IP to 60 requests per windowMs
     message: { error: "Too many requests from this IP. Please try again after an hour." },
     standardHeaders: true,
     legacyHeaders: false,
@@ -317,6 +318,10 @@ if (missingModels.length > 0) {
         const newImageApi = spawn('python', ['animal_api.py'], { cwd: __dirname });
         newImageApi.stdout.on('data', (d) => console.log(`[ML Image API] ${d.toString().trim()}`));
         newImageApi.stderr.on('data', (d) => console.error(`[ML Image API Error] ${d.toString().trim()}`));
+        faceApiProcess.kill();
+        const newFaceApi = spawn('python', ['face_api.py'], { cwd: __dirname });
+        newFaceApi.stdout.on('data', (d) => console.log(`[Face API] ${d.toString().trim()}`));
+        newFaceApi.stderr.on('data', (d) => console.error(`[Face API Error] ${d.toString().trim()}`));
     });
 } else {
     console.log('✅ Auto-Trainer: All model files present — no training needed.');
@@ -330,6 +335,10 @@ textApiProcess.stderr.on('data', (data) => console.error(`[ML Text API Error] ${
 const imageApiProcess = spawn('python', ['animal_api.py'], { cwd: __dirname });
 imageApiProcess.stdout.on('data', (data) => console.log(`[ML Image API] ${data.toString().trim()}`));
 imageApiProcess.stderr.on('data', (data) => console.error(`[ML Image API Error] ${data.toString().trim()}`));
+
+const faceApiProcess = spawn('python', ['face_api.py'], { cwd: __dirname });
+faceApiProcess.stdout.on('data', (data) => console.log(`[Face API] ${data.toString().trim()}`));
+faceApiProcess.stderr.on('data', (data) => console.error(`[Face API Error] ${data.toString().trim()}`));
 
 const API_HEALTH_URLS = [
     { name: 'Text ML', url: 'http://127.0.0.1:8000/health' },
@@ -360,14 +369,12 @@ setTimeout(async () => {
 }, 5000);
 
 // Kill Python processes when Node.js shuts down
-process.on('exit', () => {
-    try { textApiProcess.kill(); } catch {}
-    try { imageApiProcess.kill(); } catch {}
-});
-process.on('SIGINT', () => {
-    try { textApiProcess.kill(); } catch {}
-    try { imageApiProcess.kill(); } catch {}
-    process.exit();
-});
+function killAll() {
+    for (const p of [textApiProcess, imageApiProcess, faceApiProcess]) {
+        try { p.kill(); } catch {}
+    }
+}
+process.on('exit', killAll);
+process.on('SIGINT', () => { killAll(); process.exit(); });
 
 startServer(PORT);

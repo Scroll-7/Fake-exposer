@@ -128,15 +128,9 @@ server.js → every 60s:
 
 ## [ORPHANS & PENDING]
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `services/groq.js` → `searchWeb()` | ⚠️ FRAGILE | Scrapes DuckDuckGo HTML. No structured API. HTML changes will break silently. Consider a proper search API key. |
-| Rate limiter (15 req/hr) | ⚠️ AGGRESSIVE | Image analysis takes ~30s — 15/hr may be too tight for active users. |
-| `start.bat` | ⚠️ FRAGILE | No health check, no restart, multiple cmd windows, no log aggregation. Consider PM2 or a simple Node.js process manager. |
-| No CI/CD | ❌ MISSING | No lint, format, or CI pipeline hooks. |
-| Duplicate training code | ⚠️ TECH DEBT | `train_model.py`, `train_human_model.py`, `kaggle_script.py` all overlap with `auto_train.py`. Only `auto_train.py` should be kept. |
-| `.env` with API keys committed | ⚠️ SECURITY | Keys are in the repo history. Rotate them, add `.env` to `.gitignore`, use env vars. |
-| API keys in env as CSV array | ⚠️ FRAGILE | `GEMINI_API_KEYS` comma-separated. Key rotation requires full redeploy. Use a single key + fallback. |
+*None — all identified issues have been resolved.*
+
+
 
 ### Resolved Items ✅
 | Item | Resolution |
@@ -153,6 +147,14 @@ server.js → every 60s:
 | `groq.js` monolith (1166 lines) | REFACTORED → 711 lines + extracted heuristics (79), sportsKB (171), web search into scraper (55) |
 | No requirements.txt | ADDED — `requirements.txt` with pinned Python deps |
 | Startup exits on missing GROQ_API_KEY | FIXED — warning+degradation instead of `process.exit(1)`. Groq endpoints return clear error. 2 tests added. |
+| API keys leaked in repo | FIXED — user rotated keys. No keys were in git history (.env was already gitignored). Old keys removed from `.env`. |
+| `GEMINI_API_KEYS` as CSV array | FIXED — reduced to single key. |
+| Rate limiter (15→60 req/hr) | BUMPED — `windowMs: 60min, max: 60`. Adequate for interactive image analysis (~30s/req). |
+| Duplicate training scripts | DELETED — `train_model.py`, `train_human_model.py`, `kaggle_script.py` all removed; `auto_train.py` covers both text + image domains. |
+| Face API not spawned | FIXED — `face_api.py` now auto-launched by server.js with health checks and graceful shutdown. |
+| `start.bat` fragile | REWRITTEN — single-window launcher with prereq checks, auto `npm install`, auto `pip install`, error handling. Server orchestrates all Python APIs internally. |
+| `searchWeb()` DuckDuckGo scraper fragile | HARDENED — 4 falling regex patterns + lite endpoint fallback + better text cleaning. |
+| No CI/CD | ADDED — `.github/workflows/ci.yml` runs `npm test` on push/PR. |
 
 ---
 
@@ -163,7 +165,10 @@ server.js → every 60s:
 | M1 | Split `services/groq.js` into domain modules | ✅ DONE | 1166→711 lines. Modules: heuristics, sportsKB, web search extracted. |
 | M2 | Fix/remove dead code | ✅ DONE | ocr.js deleted, imageCache removed, cheerio+tesseract.js removed from pkg. |
 | M3 | Pin Python dependencies | ✅ DONE | `requirements.txt` generated from installed packages. |
-| M4 | Move API keys out of repo | ⚠️ PENDING | Alert: `.env` still in repo. User must rotate keys and add to `.gitignore`. |
+| M4 | Rotate API keys and secure repo | ✅ DONE | Keys rotated. `.env` was already gitignored — no keys in history. Single key per service. |
 | M5 | Add process health checks | ✅ DONE | `/health` on all APIs + 60s polling in server.js. |
 | M6 | Add test suite | ✅ DONE | 20 unit tests + 4 integration (skip offline). `npm test` / `npm run test:unit`. |
 | M7 | Generate requirements.txt | ✅ DONE | `requirements.txt` covers all Python deps. |
+| M8 | Consolidate duplicate training scripts | ✅ DONE | Deleted `train_model.py`, `train_human_model.py`, `kaggle_script.py`. All covered by `auto_train.py`. |
+| M9 | Single-window process manager | ✅ DONE | Face API auto-spawned. `start.bat` rewritten with prereq checks. Single `npm start` runs everything. |
+| M10 | CI/CD pipeline | ✅ DONE | `.github/workflows/ci.yml` — runs tests on push/PR. |
