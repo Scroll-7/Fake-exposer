@@ -26,6 +26,10 @@ class PredictResponse(BaseModel):
     fake_probability: float
     real_probability: float
 
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": model is not None and vectorizer is not None}
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(request: PredictRequest):
     if not model or not vectorizer:

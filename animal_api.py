@@ -45,6 +45,10 @@ class PredictResponse(BaseModel):
     confidence: float
     is_human: bool
 
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": session is not None}
+
 @app.post("/predict_animal", response_model=PredictResponse)
 async def predict_animal(file: UploadFile = File(...)):
     if not session:

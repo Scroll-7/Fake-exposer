@@ -13,38 +13,27 @@ import { spawn } from 'child_process';
 import { analyzeContent, analyzeImage } from './services/groq.js';
 import { scrapeUrl } from './services/scraper.js';
 import fs from 'fs';
-import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// In-memory cache — always starts fresh on each server boot.
-// This prevents stale AI results from a previous session being returned forever.
-let imageCache = {};
-
-function saveCache() {
-    try {
-        fs.writeFileSync(CACHE_FILE, JSON.stringify(imageCache, null, 2));
-    } catch (e) {
-        console.error("Failed to save image cache:", e);
-    }
-}
-
 dotenv.config();
 
-// --- Startup Security Validation ---
+// --- Groq API Key Check (non-fatal) ---
+// Server starts regardless — Groq-dependent endpoints return a descriptive error.
 if (!process.env.GROQ_API_KEY) {
-    console.error("🚨 CRITICAL SECURITY ERROR: GROQ_API_KEY is missing from .env file!");
-    console.error("Shutting down the server to prevent unauthenticated bypasses or errors.");
-    process.exit(1);
+    console.warn("⚠️ GROQ_API_KEY is not set. Text/image analysis via Groq will be unavailable.");
+    console.warn("   The server will still serve static files and Python ML APIs.");
+    console.warn("   Set GROQ_API_KEY in .env to enable full analysis features.");
+    process.env.GROQ_API_KEY = ''; // ensure it's defined (empty) so groq-sdk doesn't throw on construction
 }
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middlewares
-app.use(helmet()); // Secure HTTP headers
-app.use(cors());
+app.use(helmet());
+app.use(cors({ origin: false })); // Same-origin only — frontend is served by Express
 app.use(express.json({ limit: '10mb' })); // Prevent huge payload DoS
 app.use(hpp()); // Prevent HTTP Parameter Pollution attacks
 app.use(morgan('combined')); // Detailed access logging for security audits
@@ -221,21 +210,9 @@ app.post('/api/analyze/image', upload.single('image'), async (req, res) => {
             return;
         }
 
-        // Generate SHA-256 hash of the image to check cache
-        const hash = crypto.createHash('sha256').update(imageData).digest('hex');
-        
-        if (imageCache[hash]) {
-            console.log(`⚡ Cache hit for image: ${hash} (Returning instantly)`);
-            return res.json(applyTrustedBoost(imageCache[hash]));
-        }
-
         // Pass optional user context (e.g. "this is an AI generated photo of me")
         const userContext = req.body.context || '';
         const result = await analyzeImage(base64, mimeType, userContext, originalName);
-        
-        // Save result to cache
-        imageCache[hash] = result;
-        saveCache();
         
         res.json(applyTrustedBoost(result));
     } catch (error) {
@@ -292,6 +269,59 @@ function startServer(port) {
     });
 }
 
+// --- Auto-Training Check ---
+// If any model file is missing, automatically run auto_train.py in the background.
+// The server boots immediately and starts serving — ML endpoints gracefully degrade
+// until training finishes and the Python APIs reload the new model files.
+const MODEL_FILES = [
+    { path: path.join(__dirname, 'fake_news_model.pkl'),      label: 'Text fake-news model' },
+    { path: path.join(__dirname, 'fake_news_vectorizer.pkl'), label: 'Text vectorizer' },
+    { path: path.join(__dirname, 'animal_model.onnx'),        label: 'Image classifier model' },
+];
+
+const missingModels = MODEL_FILES.filter(m => !fs.existsSync(m.path));
+
+if (missingModels.length > 0) {
+    console.log('\n🤖 Auto-Trainer: The following model files are missing:');
+    missingModels.forEach(m => console.log(`   • ${m.label}  (${path.basename(m.path)})`));
+    console.log('🤖 Auto-Trainer: Starting auto_train.py in the background...');
+    console.log('🤖 Auto-Trainer: The server is live — ML features will activate once training completes.\n');
+
+    const trainer = spawn('python', ['auto_train.py'], {
+        cwd: __dirname,
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    trainer.stdout.on('data', (data) => {
+        data.toString().split('\n').filter(Boolean).forEach(line =>
+            console.log(`[Auto-Trainer] ${line}`)
+        );
+    });
+    trainer.stderr.on('data', (data) => {
+        data.toString().split('\n').filter(Boolean).forEach(line =>
+            console.error(`[Auto-Trainer ERR] ${line}`)
+        );
+    });
+    trainer.on('close', (code) => {
+        if (code === 0) {
+            console.log('\n✅ Auto-Trainer: All models trained successfully! Restarting Python APIs...');
+        } else {
+            console.error(`\n❌ Auto-Trainer: Training exited with code ${code}. Check logs above.`);
+        }
+        // Restart Python APIs so they pick up the freshly trained model files
+        textApiProcess.kill();
+        imageApiProcess.kill();
+        const newTextApi = spawn('python', ['python_api.py'], { cwd: __dirname });
+        newTextApi.stdout.on('data', (d) => console.log(`[ML Text API] ${d.toString().trim()}`));
+        newTextApi.stderr.on('data', (d) => console.error(`[ML Text API Error] ${d.toString().trim()}`));
+        const newImageApi = spawn('python', ['animal_api.py'], { cwd: __dirname });
+        newImageApi.stdout.on('data', (d) => console.log(`[ML Image API] ${d.toString().trim()}`));
+        newImageApi.stderr.on('data', (d) => console.error(`[ML Image API Error] ${d.toString().trim()}`));
+    });
+} else {
+    console.log('✅ Auto-Trainer: All model files present — no training needed.');
+}
+
 // --- Start Python ML APIs Automatically ---
 const textApiProcess = spawn('python', ['python_api.py'], { cwd: __dirname });
 textApiProcess.stdout.on('data', (data) => console.log(`[ML Text API] ${data.toString().trim()}`));
@@ -301,14 +331,42 @@ const imageApiProcess = spawn('python', ['animal_api.py'], { cwd: __dirname });
 imageApiProcess.stdout.on('data', (data) => console.log(`[ML Image API] ${data.toString().trim()}`));
 imageApiProcess.stderr.on('data', (data) => console.error(`[ML Image API Error] ${data.toString().trim()}`));
 
+const API_HEALTH_URLS = [
+    { name: 'Text ML', url: 'http://127.0.0.1:8000/health' },
+    { name: 'Image ML', url: 'http://127.0.0.1:8001/health' },
+    { name: 'Face ID', url: 'http://127.0.0.1:8002/health' },
+];
+
+async function checkApiHealth() {
+    for (const api of API_HEALTH_URLS) {
+        try {
+            const res = await fetch(api.url, { signal: AbortSignal.timeout(3000) });
+            if (res.ok) {
+                const data = await res.json();
+                console.log(`[Health] ${api.name} API OK: ${JSON.stringify(data)}`);
+            } else {
+                console.error(`[Health] ${api.name} API returned ${res.status}`);
+            }
+        } catch {
+            console.warn(`[Health] ${api.name} API unreachable`);
+        }
+    }
+}
+
+// Health check every 60 seconds, first check after 5s
+setTimeout(async () => {
+    await checkApiHealth();
+    setInterval(checkApiHealth, 60000);
+}, 5000);
+
 // Kill Python processes when Node.js shuts down
 process.on('exit', () => {
-    textApiProcess.kill();
-    imageApiProcess.kill();
+    try { textApiProcess.kill(); } catch {}
+    try { imageApiProcess.kill(); } catch {}
 });
 process.on('SIGINT', () => {
-    textApiProcess.kill();
-    imageApiProcess.kill();
+    try { textApiProcess.kill(); } catch {}
+    try { imageApiProcess.kill(); } catch {}
     process.exit();
 });
 

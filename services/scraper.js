@@ -1,3 +1,29 @@
+export async function searchWeb(query) {
+    try {
+        const response = await fetch('https://html.duckduckgo.com/html/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            body: 'q=' + encodeURIComponent(query),
+            signal: AbortSignal.timeout(10000)
+        });
+        const html = await response.text();
+        const snippetRegex = /<a class="result__snippet[^>]*>(.*?)<\/a>/gi;
+        let match;
+        const snippets = [];
+        while ((match = snippetRegex.exec(html)) !== null && snippets.length < 3) {
+            let text = match[1].replace(/<[^>]+>/g, '').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').trim();
+            if (text) snippets.push(text);
+        }
+        return snippets.length ? snippets.join('\n- ') : "No recent news found.";
+    } catch (err) {
+        console.error("Search failed:", err.message);
+        return "No recent news found.";
+    }
+}
+
 export async function scrapeUrl(url) {
     try {
         // Use Jina Reader API to fetch and parse the URL into clean Markdown.
