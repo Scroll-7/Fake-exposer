@@ -1,9 +1,12 @@
 import Groq from 'groq-sdk';
 import dotenv from 'dotenv';
+import FormData from 'form-data';
 import { detectAiImage, computeAiOverride } from './aiDetector.js';
 import { detectExtremePhysiqueCasualSetting, detectAiPortrait, detectAiFilename } from './heuristics.js';
-import { detectJerseyMismatch } from './sportsKB.js';
+import { detectJerseyMismatch, findTeamInText, PLAYER_CLUBS, getCelebrityContext } from './sportsKB.js';
 import { searchWeb } from './scraper.js';
+import { withRetry } from './retry.js';
+import { analyzeText } from './textDetector.js';
 dotenv.config();
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -61,8 +64,26 @@ export async function analyzeContent(text) {
     // The TPM limit is 12000 tokens. Safely truncate to 15,000 characters.
     let contentToAnalyze = text;
     if (contentToAnalyze.length > 15000) {
-        contentToAnalyze = contentToAnalyze.substring(0, 15000) + "\n...[Content truncated due to length]...";
+        contentToAnalyze = contentToAnalyze.substring(0, 15000) + '\n...[Content truncated due to length]...';
     }
+
+    // ZeroGPT-style statistical text detector (instant, synchronous)
+    const detectorResult = analyzeText(text);
+    const detectorContext = detectorResult.overallScore >= 30
+        ? `\n--- STATISTICAL AI TEXT DETECTION ---
+The following is an automatic statistical analysis (simulating ZeroGPT's DeepAnalyse™ methodology):
+- Overall AI Probability: ${detectorResult.overallScore}%
+- Perplexity (word predictability): ${detectorResult.perplexity}/100
+- Burstiness (sentence length variance): ${detectorResult.burstiness}/100
+- Vocabulary Diversity: ${detectorResult.vocabulary}/100
+- Repetition (structural patterns): ${detectorResult.repetition}/100
+- Sentence Start Diversity: ${detectorResult.sentenceStarts}/100
+- Formality (AI-favored vocabulary): ${detectorResult.formality ?? '—'}/100
+- AI-like sentences: ${detectorResult.aiSentencePercentage}% of all sentences
+${detectorResult.overallScore >= 60 ? '\nWARNING: This text has strong statistical patterns of AI generation. Treat the content with extra skepticism.' : ''}
+${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matches AI writing patterns. Strong likelihood of being fully AI-generated.' : ''}
+----------------------------------------`
+        : '';
 
     const prompt = `
     You are an expert fact-checker, journalism credibility analyst, and source reputation researcher.
@@ -75,6 +96,7 @@ export async function analyzeContent(text) {
     Use these facts to determine if the user's claim is true or false, especially for recent events:
     - ${searchResults}
     --------------------------------------------------------
+    ${detectorContext}
 
     Text to analyze:
     "${contentToAnalyze}"
@@ -83,15 +105,15 @@ export async function analyzeContent(text) {
     `;
 
     try {
-        const completion = await groq.chat.completions.create({
-            messages: [{ role: "user", content: prompt }],
-            model: "llama-3.3-70b-versatile",
-            response_format: { type: "json_object" },
+        const completion = await withRetry(() => groq.chat.completions.create({
+            messages: [{ role: 'user', content: prompt }],
+            model: 'llama-3.3-70b-versatile',
+            response_format: { type: 'json_object' },
             temperature: 0.1,
-        });
+        }), { onRetry: (err, attempt) => console.warn(`Groq text analysis retry ${attempt}: ${err.message}`) });
 
         const responseText = completion.choices[0]?.message?.content || '{}';
-        let result = JSON.parse(responseText);
+        const result = JSON.parse(responseText);
         
         // --- LOCAL MACHINE LEARNING MODEL INTEGRATION ---
         try {
@@ -119,20 +141,36 @@ export async function analyzeContent(text) {
                 }
             }
         } catch (e) {
-            console.log("Local Python ML API not reachable or timed out, skipping ML score...");
+            console.log('Local Python ML API not reachable or timed out, skipping ML score...');
+        }
+
+        // ZeroGPT-style statistical AI text detector post-processing
+        if (detectorResult.overallScore >= 60) {
+            result.red_flags = result.red_flags || [];
+            result.red_flags.push(`🤖 Statistical AI Detector (ZeroGPT-style): ${detectorResult.overallScore}% probability of AI-generated text (formality ${detectorResult.formality ?? '?'}%, perplexity ${detectorResult.perplexity}%, burstiness ${detectorResult.burstiness}%, ${detectorResult.aiSentencePercentage}% of sentences flagged).`);
+            if (detectorResult.overallScore >= 80 && (result.credibility_score ?? 100) > 40) {
+                result.credibility_score = Math.min(result.credibility_score ?? 100, 30);
+                result.verdict = 'Likely AI-Generated Text';
+                if (result.summary) {
+                    result.summary = `Statistical AI text detection: ${detectorResult.overallScore}% AI probability. ${result.summary}`;
+                }
+            } else if (detectorResult.overallScore >= 60 && (result.credibility_score ?? 100) > 60) {
+                result.credibility_score = Math.min(result.credibility_score ?? 100, 50);
+            }
+        } else if (detectorResult.overallScore > 0 && detectorResult.overallScore < 30) {
+            result.green_flags = result.green_flags || [];
+            result.green_flags.push(`✅ Statistical Text Detector: Only ${detectorResult.overallScore}% AI probability — text has natural human writing patterns.`);
         }
 
         return result;
     } catch (error) {
-        console.error("Groq text analysis error:", error);
+        console.error('Groq text analysis error:', error);
         throw error;
     }
 }
 
 // Vision models to try in order — if one is over capacity, fall back to the next
 const VISION_MODELS = [
-    'meta-llama/llama-4-scout-17b-16e-instruct',
-    'meta-llama/llama-4-maverick-17b-128e-instruct',
     'llama-3.2-90b-vision-preview',
     'llama-3.2-11b-vision-preview',
 ];
@@ -157,12 +195,14 @@ async function groqVisionRequest(messages, maxTokens = 500) {
             const msg = err?.error?.message || err?.message || '';
             const isOverCapacity = msg.includes('over capacity') || msg.includes('503') || (err?.status === 503);
             const isUnavailable = msg.includes('unavailable') || msg.includes('404') || (err?.status === 404);
-            if (isOverCapacity || isUnavailable) {
+            const isNoVision = msg.includes('does not support image input') || msg.includes('does not support images') || msg.includes('image input');
+            const isTransient = /timeout|fetch failed|ECONNRESET|ETIMEDOUT|network/i.test(msg);
+            if (isOverCapacity || isUnavailable || isTransient || isNoVision) {
                 console.warn(`Model ${model} unavailable (${err?.status || 'err'}): ${msg.slice(0, 120)} — trying next model...`);
                 lastError = err;
                 continue;
             }
-            // Non-capacity error — re-throw immediately
+            // Non-transient error — re-throw immediately
             throw err;
         }
     }
@@ -187,16 +227,15 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
         ? `\n\nFILE METADATA: The original filename is "${originalName}". If this name contains references to AI tools (chatgpt, midjourney, dalle, stable diffusion, flux, etc.) or words like "fake", "edited", "enhanced", "generated" — treat it as a STRONG signal that the image is AI-generated or manipulated and score accordingly.`
         : '';
 
-    // ── PARALLEL: Face API + Gemini detection + Groq Step 1 description ──
-    // All three are independent — run concurrently to cut ~10s off the total time.
-    const [faceIdOverride, aiDetection, imageDescription] = await Promise.all([
+    // ── PARALLEL: Face API + Gemini + Nonescape + Groq Step 1 ──
+    // All are independent — run concurrently to cut ~10s off the total time.
+    const [faceIdOverride, aiDetection, nonescapeResult, imageDescription] = await Promise.all([
 
         // Face API (Python microservice)
         (async () => {
             try {
                 console.log('[FaceID] Sending image to local Python Face API...');
                 const buffer = Buffer.from(imageBase64, 'base64');
-                const FormData = (await import('form-data')).default;
                 const form = new FormData();
                 form.append('file', buffer, { filename: 'upload.jpg', contentType: mimeType });
                 const faceRes = await fetch('http://127.0.0.1:8002/recognize', {
@@ -222,9 +261,26 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
         // Gemini AI image forensics
         detectAiImage(imageBase64, mimeType),
 
+        // Nonescape local ONNX AI detection model (port 8001)
+        (async () => {
+            try {
+                const buffer = Buffer.from(imageBase64, 'base64');
+                const form = new FormData();
+                form.append('file', buffer, { filename: 'image.jpg', contentType: mimeType });
+                const res = await fetch('http://127.0.0.1:8001/detect_ai', {
+                    method: 'POST', body: form, headers: form.getHeaders(),
+                    signal: AbortSignal.timeout(10000)
+                });
+                if (res.ok) return await res.json();
+            } catch (e) {
+                console.warn('[Nonescape] AI detection API not reachable:', e.message);
+            }
+            return null;
+        })(),
+
         // Step 1: Rich visual description
         (async () => {
-            console.log(`Starting Groq step 1 (Description)...`);
+            console.log('Starting Groq step 1 (Description)...');
             const descStartTime = Date.now();
             try {
                 const userContextNote = userContext
@@ -232,10 +288,10 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
                     : '';
                 const descCompletion = await groqVisionRequest([
                     {
-                        role: "user",
+                        role: 'user',
                         content: [
                             {
-                                type: "text",
+                                type: 'text',
                                 text: `You are a visual forensics expert. Analyze this image thoroughly and answer ALL of the following questions:${userContextNote}${filenameNote}
 
 --- GENERAL AI / MANIPULATION DETECTION ---
@@ -251,14 +307,14 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
 3. Are there any blending artifacts or unnatural boundary transitions between body parts or between the person and the background?
 
 --- IDENTITY CHECK (SPORTS IMAGES ONLY) ---
-4. If the person is wearing a sports jersey: identify the TEAM from the badge, sponsor text, or jersey colors/pattern. ONLY identify the player by name if their NAME is actually visible on the jersey (e.g., printed on the back). If no name is readable, say "Player name not visible in image". For the team, be specific: read the badge, sponsor logo, or text. Do NOT guess the player's identity based on facial features — facial recognition from AI is unreliable and frequently wrong.
+4. If the person is wearing a sports jersey: identify the TEAM from the badge, sponsor text, or jersey colors/pattern. For the player: if their NAME is printed on the jersey (back or front), use that. If no name is visible, you MUST name the player if they are an ultra-famous global superstar whose face you clearly recognise (e.g. Messi, Ronaldo, Neymar, Mbappé, Salah, Lewandowski, De Bruyne, Mbappé). This is CRITICAL for detecting fake/photoshopped images where a star's head is placed on another player's body. For all other players, say "Player name not visible in image".
 
 --- SUMMARY ---
 6. Write a 2-3 sentence summary of what the image shows and whether it appears authentic or manipulated.
 
 Be very specific and honest about uncertainty.`
                             },
-                            { type: "image_url", image_url: { url: dataUrl } }
+                            { type: 'image_url', image_url: { url: dataUrl } }
                         ]
                     }
                 ], 250);
@@ -275,23 +331,71 @@ Be very specific and honest about uncertainty.`
     // Compute AI override from Gemini result (instant, local)
     const aiOverride = computeAiOverride(aiDetection);
 
+    // Nonescape local ONNX model result — complementary AI detection
+    const nonescapeAiProb = nonescapeResult?.ai_probability;
+    const nonescapeAuthProb = nonescapeResult?.authentic_probability;
+    let nonescapeNote = '';
+    if (nonescapeAiProb !== undefined) {
+        const pct = Math.round(nonescapeAiProb * 100);
+        if (nonescapeAiProb > 0.7) {
+            nonescapeNote = `\n⚠️ AUTOMATIC AI DETECTION MODEL: ${pct}% probability this image is AI-generated (local ONNX classifier). This is a STRONG signal. Score should be 30 or lower.`;
+        } else if (nonescapeAiProb > 0.5) {
+            nonescapeNote = `\n⚠️ AUTOMATIC AI DETECTION MODEL: ${pct}% probability this image is AI-generated (local ONNX classifier). This is a MODERATE signal. Treat with suspicion.`;
+        } else if (nonescapeAiProb < 0.3) {
+            nonescapeNote = `\n✅ AUTOMATIC AI DETECTION MODEL: Only ${pct}% probability of AI generation (local ONNX classifier). The image passes the model-based detector.`;
+        }
+    }
+
     // Build face ID context for Step 3 (no longer modifying userContext in-place)
     const faceIdContext = faceIdOverride
         ? `[GROUND TRUTH FACE ID] The face in this image mathematically matches ${faceIdOverride}. DO NOT guess the name, it is absolutely ${faceIdOverride}.`
         : '';
 
+    // ── CELEBRITY CONTEXT ──
+    // If the Face API identified a known celebrity, add their known affiliations/roles
+    // so the LLM can detect out-of-context or implausible depictions.
+    const celebrityInfo = getCelebrityContext(faceIdOverride);
+    const celebrityNote = celebrityInfo
+        ? `\n[CELEBRITY PROFILE] ${celebrityInfo.display} is known as a ${celebrityInfo.roles.join(', ')}. ` +
+          (celebrityInfo.organizations.length ? `Associated with: ${celebrityInfo.organizations.join(', ')}. ` : '') +
+          `Typical settings: ${celebrityInfo.typicalSettings.join(', ')}. ` +
+          (celebrityInfo.party ? `Political party: ${celebrityInfo.party}. ` : '') +
+          (celebrityInfo.opponents?.length ? `Political opponents: ${celebrityInfo.opponents.join(', ')}. ` : '') +
+          `If this image depicts ${celebrityInfo.display} in an unusual or implausible setting or alongside political opponents that contradicts their known profile, this is a STRONG signal of a deepfake or manipulation.`
+        : '';
+
     // Note: searchWeb() is intentionally omitted from the image analysis path.
     // Web search is designed for text fact-checking — for images it adds 5-10s
     // of unreliable DuckDuckGo scraping with negligible factual value.
-    const searchResults = "No recent news found.";
+    const searchResults = 'No recent news found.';
 
-    // ── STEP 1.5a: Local KB jersey mismatch check on Step 1 description (offline, instant) ──
-    let jerseyMismatch = detectJerseyMismatch(imageDescription);
+    // ── STEP 1.5a: Local KB jersey mismatch check (offline, instant) ──
+    // Check the Step 1 description, user context, and Face API result combined.
+    // The LLM is instructed NOT to guess the player from facial features, so it may
+    // avoid naming the player even when the face is obvious. The user's own input
+    // ("Is Neymar in an AC Milan jersey real?") fills that gap.
+    const mismatchText = [imageDescription, userContext, faceIdOverride].filter(Boolean).join(' ');
+    let jerseyMismatch = detectJerseyMismatch(mismatchText);
 
-    // Note: The Gemini sports identity check has been removed.
-    // Facial recognition from AI is unreliable and frequently misidentifies players.
-    // The system now only flags jersey mismatches when the player's NAME is literally
-    // visible in the image (readable text on jersey) or provided by the Face API.
+    // Fallback: if a team jersey IS clearly visible but NO player name can be
+    // matched from any source (description, user context, or Face API), flag
+    // this as suspicious — the person's identity is unverifiable.
+    let unverifiableIdentity = null;
+    if (!jerseyMismatch) {
+        const teamName = findTeamInText(mismatchText);
+        if (teamName && !Object.keys(PLAYER_CLUBS).some(p => mismatchText.toLowerCase().includes(p))) {
+            unverifiableIdentity = teamName;
+            console.log(`⚠️ Unverifiable identity: jersey shows ${teamName} but no player name found in text`);
+        }
+    }
+
+    // ── STEP 1.5b: Sports context suspicion (when Face API is unavailable) ──
+    // If we couldn't run the Face API (faceIdOverride is null) AND the image
+    // description suggests sports content but no player+team combo was matched,
+    // add a suspicion flag. This catches cases where the LLM describes a player
+    // in a jersey but doesn't name them (e.g., Messi in a Real Madrid jersey
+    // described as "a man in a white jersey").
+    const sportsWarning = detectSportsSuspicion(faceIdOverride, jerseyMismatch, imageDescription, findTeamInText);
 
     // ── STEP 2.5: Rule-based heuristics ──
     const physiqueWarning = detectExtremePhysiqueCasualSetting(imageDescription);
@@ -311,15 +415,31 @@ Be very specific and honest about uncertainty.`
 
     const anyHeuristicWarning = physiqueWarning || portraitWarning || filenameWarning;
 
+    // ── UNVERIFIABLE IDENTITY FALLBACK ──
+    // If a team jersey was detected but no player name could be matched,
+    // add a caution flag for the Step 3 LLM.
+    const unverifiableNote = unverifiableIdentity
+        ? `\n⚠️ AUTOMATIC IDENTITY WARNING: The jersey in this image shows ${unverifiableIdentity}, but the system could not determine who the person is — no player name is visible on the jersey, the user did not name them, and Face ID did not match. This combination (clear team jersey + unidentifiable person) is suspicious and may indicate a face-swapped fake where a star's head was placed on another player's body. Treat this as a STRONG signal for low credibility (score < 40) unless you can clearly identify the person\'s face.`
+        : '';
+
+    // ── SPORTS CONTEXT SUSPICION ──
+    const sportsNote = sportsWarning
+        ? `\n⚠️ AUTOMATIC SPORTS SUSPICION: ${sportsWarning}\nThis appears to be a sports-related image but the system could not identify the specific team or player. Without the Face API available for identity verification, this image should be treated with moderate suspicion.`
+        : '';
+
     // ── STEP 3: Full analysis with both visual + factual context ──
-    const userContextSection = userContext || filenameNote || faceIdContext || anyHeuristicWarning
+    const userContextSection = userContext || filenameNote || faceIdContext || anyHeuristicWarning || unverifiableIdentity || nonescapeNote || sportsWarning || celebrityNote
         ? `--- USER-PROVIDED CONTEXT (TREAT AS A STRONG SIGNAL) ---
     ${userContext ? `The person who uploaded this image says: "${userContext}"` : ''}
     ${faceIdContext ? `\n${faceIdContext}` : ''}
+    ${celebrityNote}
     ${filenameNote}
     ${physiqueWarning ? `\n⚠️ AUTOMATIC HEURISTIC WARNING (MUSCLE): ${physiqueWarning}\nThis combination (extreme competition-level physique + casual everyday setting) is a PRIMARY indicator of AI muscle enhancement. You MUST reflect this suspicion in your score and verdict. Score should be 30 or lower.` : ''}
     ${portraitWarning ? `\n⚠️ AUTOMATIC HEURISTIC WARNING (PORTRAIT): ${portraitWarning}\nThis image matches the signature of AI-generated portrait photos from tools like Gemini Image, DALL-E, and Midjourney. You MUST reflect this suspicion. Score should be 25 or lower unless you find specific real-world evidence this is genuine.` : ''}
     ${filenameWarning ? `\n⚠️ AUTOMATIC HEURISTIC WARNING (FILENAME): ${filenameWarning}\nYou MUST score this as extremely low credibility (1-10) because the filename itself reveals it is an AI generation.` : ''}
+    ${unverifiableNote}
+    ${nonescapeNote}
+    ${sportsNote}
     If the user admits the image is AI-generated, edited, or fake, TRUST THEM and reflect this in your verdict and score.
     If the filename suggests AI origin, treat it as a high-confidence signal of manipulation.
     --------------------------------------------------------`
@@ -429,9 +549,11 @@ Be very specific and honest about uncertainty.`
 
       ── SPORTS JERSEY FACT-CHECK (only if applicable) ──
       Identify the TEAM from the jersey badge/colors/sponsor text.
-      ONLY identify the player by name if their NAME is actually visible on the jersey.
-      If no name is visible, say "Player name not visible" — do NOT guess.
-      If you CAN read a player name AND it does not match the team → score 5-20, verdict "Fake / Manipulated - Player Not at This Club"
+      Identify the PLAYER:
+        - If a name IS visible on the jersey (front or back), use that.
+        - If NO name is visible but the face is of an ultra-famous global superstar (e.g. Messi, Ronaldo, Neymar, Mbappé, Salah, Lewandowski, De Bruyne) whose face you clearly recognise, you MUST name them for mismatch detection. This is critical for catching face-swapped fakes.
+        - Otherwise say "Player name not visible".
+      If the identified player has NEVER played for the team on the jersey → score 5-20, verdict "Fake / Manipulated - Player Not at This Club"
 
     --- VISUAL ANALYSIS FROM STEP 1 ---
     ${imageDescription || 'No description available.'}
@@ -444,14 +566,14 @@ Be very specific and honest about uncertainty.`
     `;
 
     try {
-        console.log(`Starting Groq step 3 (Final Analysis)...`);
+        console.log('Starting Groq step 3 (Final Analysis)...');
         const analysisStartTime = Date.now();
         const completion = await groqVisionRequest([
             {
-                role: "user",
+                role: 'user',
                 content: [
-                    { type: "text", text: prompt },
-                    { type: "image_url", image_url: { url: dataUrl } }
+                    { type: 'text', text: prompt },
+                    { type: 'image_url', image_url: { url: dataUrl } }
                 ]
             }
         ], 1024);
@@ -461,12 +583,13 @@ Be very specific and honest about uncertainty.`
         // Clean markdown blocks if vision model ignores json_object format
         responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
         const llmResult = JSON.parse(responseText);
+        llmResult.face_identified = faceIdOverride || null;
 
         // ── POST-STEP-3 RE-CHECK FOR JERSEY MISMATCH ──
-        // Sometimes Step 1 misses the player name, but the LLM in Step 3 figures it out.
-        // We re-run the local KB check on the LLM's own summary and verdict.
+        // The LLM might name the player/team in its verdict even when Step 1 didn't.
+        // Also includes user context and Face API result (same as the pre-check).
         if (!jerseyMismatch) {
-            const combinedLlmText = `${llmResult.summary || ''} ${llmResult.verdict || ''} ${(llmResult.red_flags || []).join(' ')}`;
+            const combinedLlmText = `${llmResult.summary || ''} ${llmResult.verdict || ''} ${(llmResult.red_flags || []).join(' ')} ${userContext || ''} ${faceIdOverride || ''}`;
             const postCheckMismatch = detectJerseyMismatch(combinedLlmText);
             if (postCheckMismatch) {
                 console.log(`[Sports Check] Post-LLM check caught mismatch: ${postCheckMismatch.player} + ${postCheckMismatch.jerseyTeam}`);
@@ -603,11 +726,65 @@ Be very specific and honest about uncertainty.`
                 credibility_score: cappedScore,
                 verdict: 'Confirmed AI-Generated',
                 red_flags: [
-                    `🤖 The file's original name explicitly reveals it was created by an AI tool`,
+                    '🤖 The file\'s original name explicitly reveals it was created by an AI tool',
                     ...(llmResult.red_flags || []),
                 ],
                 green_flags: [],
                 summary: `Automatic heuristic: ${filenameWarning} ${llmResult.summary || ''}`.trim(),
+            };
+        }
+
+        if (unverifiableIdentity && (llmResult.credibility_score ?? 100) > 45) {
+            const cappedScore = 35;
+            console.log(`⚠️ Unverifiable identity cap: jersey shows ${unverifiableIdentity} but no player name — score ${llmResult.credibility_score} → ${cappedScore}`);
+            return {
+                ...llmResult,
+                credibility_score: cappedScore,
+                verdict: 'Suspicious — Unverifiable Person in Team Jersey',
+                red_flags: [
+                    `⚽ The jersey clearly shows ${unverifiableIdentity}, but who the person is could not be determined — no visible player name, no face match, and the user didn't identify them`,
+                    'This combination (clear team brand + unidentifiable person) often indicates a face-swapped fake',
+                    ...(llmResult.red_flags || []),
+                ],
+                green_flags: [],
+                summary: `Identity unverifiable: ${unverifiableIdentity} jersey with no identifiable player. ${llmResult.summary || ''}`.trim(),
+            };
+        }
+
+        // ── SPORTS CONTEXT SUSPICION CAP ──
+        // When Face API is unavailable and sports content is detected but neither
+        // team nor player could be identified, cap at 60 (moderate suspicion)
+        // to avoid 100% "definitely real" for unverifiable sports images.
+        if (sportsWarning && (llmResult.credibility_score ?? 100) > 70) {
+            const cappedScore = 55;
+            console.log(`⚠️ Sports context suspicion cap: sports content without identifiable team/player — score ${llmResult.credibility_score} → ${cappedScore}`);
+            return {
+                ...llmResult,
+                credibility_score: cappedScore,
+                verdict: 'Unverifiable — Sports Image Without Identifiable Details',
+                red_flags: [
+                    '⚽ Sports image detected but the player or team could not be identified. Unverifiable sports images may be altered.',
+                    ...(llmResult.red_flags || []),
+                ],
+                summary: `Sports context detected without verifiable team or player identity. ${llmResult.summary || ''}`.trim(),
+            };
+        }
+
+        // ── NONESCAPE LOCAL AI DETECTION CAP ──
+        if (nonescapeAiProb !== undefined && nonescapeAiProb > 0.65 && (llmResult.credibility_score ?? 100) > 40) {
+            const cappedScore = 30;
+            const pct = Math.round(nonescapeAiProb * 100);
+            console.log(`⚠️ Nonescape AI cap: ${pct}% AI prob — score ${llmResult.credibility_score} → ${cappedScore}`);
+            return {
+                ...llmResult,
+                credibility_score: cappedScore,
+                verdict: 'Likely AI-Generated (ML Detector)',
+                red_flags: [
+                    `🤖 Local AI Detection Model: ${pct}% probability of AI generation (Nonescape ONNX classifier)`,
+                    ...(llmResult.red_flags || []),
+                ],
+                green_flags: [],
+                summary: `AI detection model flagged this image: ${pct}% AI probability. ${llmResult.summary || ''}`.trim(),
             };
         }
 
@@ -617,7 +794,6 @@ Be very specific and honest about uncertainty.`
         //                     and note the classification in green_flags if score is already high
         // • Animal detected → inject a green flag with the classification result
         try {
-            const FormData = (await import('form-data')).default;
             const form = new FormData();
             // Re-encode base64 to buffer to send as a file upload
             const imageBuffer = Buffer.from(imageBase64, 'base64');
@@ -638,8 +814,8 @@ Be very specific and honest about uncertainty.`
                         llmResult.red_flags = llmResult.red_flags || [];
                         llmResult.red_flags.push(
                             `🧠 Human Detector (${pct}% confidence): This image contains a person. ` +
-                            `AI deepfakes, face swaps, and body-enhancement edits are most common in ` +
-                            `human photos — scrutinise skin texture, lighting consistency, and edge artifacts carefully.`
+                            'AI deepfakes, face swaps, and body-enhancement edits are most common in ' +
+                            'human photos — scrutinise skin texture, lighting consistency, and edge artifacts carefully.'
                         );
 
                         // If the overall score is suspiciously high for a human photo, apply a light penalty
@@ -665,7 +841,21 @@ Be very specific and honest about uncertainty.`
         return llmResult;
     } catch (error) {
         const detail = error?.error?.message || error?.message || 'Unknown error';
-        console.error("Groq image analysis error:", detail, error);
+        console.error('Groq image analysis error:', detail, error);
         throw new Error(`Image analysis failed: ${detail}`);
     }
+}
+
+// ── Sports context suspicion (when Face API is unavailable) ──
+// If we couldn't run the Face API (faceIdOverride is null) AND the image
+// description suggests sports content but no player+team combo was matched,
+// return a suspicion flag. Pure function, easily testable.
+const SPORTS_KEYWORDS = /\b(jersey|kit|shirt|stadium|football|soccer|player|team|club|match|field|pitch|goal|goalie|referee|manager|transfer|badge|sponsor|training|warm.?up|substitute|captain|captaincy)\b/i;
+
+export function detectSportsSuspicion(faceIdOverride, jerseyMismatch, imageDescription, findTeamFn = findTeamInText) {
+    if (faceIdOverride || jerseyMismatch) return null;
+    if (!imageDescription || !SPORTS_KEYWORDS.test(imageDescription)) return null;
+    const teamName = findTeamFn(imageDescription);
+    if (teamName) return null;
+    return 'Sports image detected but the player or team could not be identified. Unverifiable sports images may be altered.';
 }

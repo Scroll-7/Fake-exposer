@@ -1,44 +1,94 @@
-# Fake Exposer
+# AI-Powered Fake News Detector
 
-Multi-modal fake news / misinformation detection platform. Analyzes text, URLs, and images using Groq LLM, Gemini Vision AI, and Python ML models.
+Multi-modal deepfake detection platform: analyzes images, URLs, and text for AI-generated/manipulated content.
 
-## Quick Start
+## Features
 
-```bash
-npm install
-pip install -r requirements.txt
-npm start
-```
-
-Open `http://localhost:3001`.
+- **Image Analysis**: Upload or paste image URLs; detects AI generation, deepfakes, and content manipulation
+- **URL Analysis**: Scrapes page content and applies both text and image analysis
+- **Text Analysis**: Full Groq LLM pipeline for news/article analysis
+- **AI Text Detector**: ZeroGPT-style statistical detector (no API key, runs locally)
+- **Face Recognition**: InsightFace-based celebrity/player identification with jersey-mismatch detection
+- **Trusted Source Boost**: +50 credibility for verified sources (NPR, Reuters, etc.)
 
 ## Architecture
 
-| Service | Port | Technology |
-|---------|------|------------|
-| Frontend + API | 3001 | Node.js / Express |
-| Text ML | 8000 | Python / FastAPI + scikit-learn |
-| Image ML | 8001 | Python / FastAPI + ONNX Runtime |
-| Face ID | 8002 | Python / FastAPI + InsightFace |
+```
+┌─────────────┐     ┌─────────────────┐     ┌──────────────┐
+│  Frontend    │────▶│  server.js       │────▶│  groq.js      │
+│  (HTML/CSS)  │     │  (Express)       │     │  (LLM client) │
+└─────────────┘     │                  │     └──────────────┘
+                    │  services/       │     ┌──────────────┐
+                    │  ├─ groq.js      │────▶│  face_api.py  │
+                    │  ├─ textDetector │     │  (InsightFace) │
+                    │  ├─ sportsKB.js  │     └──────────────┘
+                    │  └─ scraper.js   │
+                    └─────────────────┘
+```
 
-The Node.js server auto-spawns all 3 Python APIs as child processes on startup.
+## Setup
+
+```bash
+# Install dependencies
+npm install
+
+# Environment
+cp .env.example .env  # Add GROQ_API_KEY, etc.
+
+# Start the server
+npm start             # Runs on http://localhost:3000
+```
+
+The Face API auto-spawns on port 8002 on first request. Requires Python 3.8+ with:
+```
+pip install fastapi uvicorn insightface opencv-python numpy onnxruntime
+```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/analyze/image` | Upload image (multipart) |
+| POST | `/api/analyze/url` | Analyze URL |
+| POST | `/api/analyze/text` | Analyze text content |
+| POST | `/api/detect/text` | ZeroGPT-style AI text detection |
+| GET | `/api/face/known` | List known face identities |
+
+## Adding New Faces
+
+```bash
+# Using the download script
+python bin/download-face.py "Person Name"
+
+# Verify the image downloaded
+ls known_faces/
+
+# Restart the server to reload embeddings
+```
+
+The filename convention is `firstname_lastname.jpg`. The Face API converts underscores to spaces and lowercases (e.g., `elon_musk.jpg` → `elon musk`). Add an entry to `CELEBRITY_CONTEXTS` in `services/sportsKB.js` for context injection.
 
 ## Scripts
 
-- `npm start` — launch server (auto-spawns all Python APIs)
-- `npm test` — run all tests (unit + integration)
-- `npm run test:unit` — unit tests only
-- `python auto_train.py` — (re)train all ML models
-- `start.bat` — wrapper with prereq checks and auto-install
+| Command | Description |
+|---------|-------------|
+| `npm start` | Run server |
+| `npm test` | Run all tests |
+| `npm run test:unit` | Run unit tests only |
+| `npm run lint` | Check code style |
+| `npm run lint:fix` | Auto-fix code style |
+| `npm run download-face` | Download celebrity face |
 
-## Environment
+## Adding to CELEBRITY_CONTEXTS
 
-Copy `.env.example` to `.env` and configure:
-
-- `GROQ_API_KEY` — Groq LLM for text/image analysis
-- `GEMINI_API_KEYS` — Google Gemini for AI forensics + sports ID
-- `PORT` — server port (default 3001)
-
-## Tests
-
-20 unit tests + 4 integration tests (skip when server offline). Run with `npm test`.
+```js
+'celebrity name': {
+    display: 'Display Name',
+    roles: ['role1', 'role2'],
+    organizations: ['Org1', 'Org2'],
+    typicalSettings: ['setting1', 'setting2'],
+    sport: null,               // or 'basketball', 'tennis', etc.
+    party: null,               // or 'Democratic', 'Republican', etc.
+    opponents: [],             // political opponents if applicable
+}
+```

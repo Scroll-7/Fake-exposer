@@ -1,3 +1,5 @@
+import { withRetry } from './retry.js';
+
 function cleanHtml(text) {
     return text
         .replace(/<[^>]+>/g, '')
@@ -55,7 +57,8 @@ async function searchJina(query) {
         // Jina returns markdown with line-item results — take first 3 non-empty lines
         const lines = text.split('\n').filter(l => l.trim().length > 20 && !l.startsWith('!') && !l.startsWith('[')).slice(0, 3);
         return lines.length > 0 ? lines.join('\n- ') : null;
-    } catch {
+    } catch (err) {
+        console.warn('Jina search failed:', err?.message || err);
         return null;
     }
 }
@@ -95,20 +98,21 @@ export async function searchWeb(query) {
     const jinaResult = await searchJina(query);
     if (jinaResult) return jinaResult;
 
-    console.error("Search failed:", errors.join('; '));
-    return "No recent news found.";
+    console.error('Search failed:', errors.join('; '));
+    return 'No recent news found.';
 }
 
 export async function scrapeUrl(url) {
     try {
         const jinaUrl = `https://r.jina.ai/${url}`;
 
-        const response = await fetch(jinaUrl, {
+        const response = await withRetry(() => fetch(jinaUrl, {
             headers: {
                 'User-Agent': 'FakeNewsDetector/1.0',
                 'X-Return-Format': 'markdown'
-            }
-        });
+            },
+            signal: AbortSignal.timeout(15000)
+        }), { maxRetries: 2, onRetry: (err, a) => console.warn(`scrapeUrl retry ${a}: ${err.message}`) });
 
         if (!response.ok) {
             throw new Error(`Jina API failed: ${response.statusText}`);

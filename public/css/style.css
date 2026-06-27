@@ -766,3 +766,118 @@ textarea:focus, input[type="url"]:focus {
     from { transform: scale(0.6); opacity: 0; }
     to { transform: scale(1); opacity: 1; }
 }
+
+.face-badge {
+    margin-top: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(99,102,241,0.15);
+    border: 1px solid rgba(99,102,241,0.3);
+    border-radius: 999px;
+    padding: 4px 14px;
+    font-size: 0.8rem;
+    color: #a5b4fc;
+    animation: badgePop 0.3s ease-out;
+    width: fit-content;
+}
+.face-badge .badge-icon { font-size: 1rem; }
+.face-badge.hidden { display: none; }
+
+/* ── ZeroGPT-style AI Detector Tab ── */
+.detector-subtitle {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+    line-height: 1.5;
+}
+.detector-results {
+    margin-top: 1.5rem;
+    padding: 1.25rem;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+}
+.detector-gauge {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+}
+.gauge-bar {
+    flex: 1;
+    height: 20px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 10px;
+    overflow: hidden;
+}
+.gauge-fill {
+    height: 100%;
+    border-radius: 10px;
+    transition: width 0.6s ease;
+    width: 0%;
+}
+.gauge-label {
+    font-weight: 700;
+    font-size: 1.1rem;
+    min-width: 60px;
+    text-align: right;
+}
+.detector-metrics {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+.metric {
+    background: rgba(255,255,255,0.04);
+    padding: 0.6rem 0.8rem;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.metric-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.metric-bar {
+    height: 6px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.metric-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+    width: 0%;
+}
+.metric-val {
+    font-size: 0.85rem;
+    font-weight: 700;
+}
+.detector-sentences {
+    max-height: 400px;
+    overflow-y: auto;
+    border-top: 1px solid var(--glass-border);
+    padding-top: 1rem;
+}
+.detector-sentence {
+    padding: 0.4rem 0.6rem;
+    margin-bottom: 0.3rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    transition: background 0.2s;
+}
+.detector-sentence.ai {
+    background: rgba(239, 68, 68, 0.12);
+    border-left: 3px solid var(--red);
+}
+.detector-sentence.human {
+    background: rgba(16, 185, 129, 0.08);
+    border-left: 3px solid var(--green);
+}

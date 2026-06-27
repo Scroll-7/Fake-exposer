@@ -21,7 +21,7 @@ describe('searchWeb', () => {
 
     it('extracts snippets from DuckDuckGo HTML', async () => {
         // Realistic DuckDuckGo HTML snippet with proper length
-        const html = `<!DOCTYPE html><html><body><div class="results"><div class="result"><a class="result__snippet" href="http://example.com">This is a test snippet about fake news detection using AI and machine learning methods</a></div></div></body></html>`;
+        const html = '<!DOCTYPE html><html><body><div class="results"><div class="result"><a class="result__snippet" href="http://example.com">This is a test snippet about fake news detection using AI and machine learning methods</a></div></div></body></html>';
         mock.method(global, 'fetch', () => Promise.resolve({
             text: () => Promise.resolve(html),
         }));

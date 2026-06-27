@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 
 import { analyzeContent, analyzeImage } from './services/groq.js';
+import { analyzeText as detectText } from './services/textDetector.js';
 import { scrapeUrl } from './services/scraper.js';
 import fs from 'fs';
 
@@ -28,9 +29,9 @@ const __dirname = path.dirname(__filename);
 // --- Groq API Key Check (non-fatal) ---
 // Server starts regardless — Groq-dependent endpoints return a descriptive error.
 if (!process.env.GROQ_API_KEY) {
-    console.warn("⚠️ GROQ_API_KEY is not set. Text/image analysis via Groq will be unavailable.");
-    console.warn("   The server will still serve static files and Python ML APIs.");
-    console.warn("   Set GROQ_API_KEY in .env to enable full analysis features.");
+    console.warn('⚠️ GROQ_API_KEY is not set. Text/image analysis via Groq will be unavailable.');
+    console.warn('   The server will still serve static files and Python ML APIs.');
+    console.warn('   Set GROQ_API_KEY in .env to enable full analysis features.');
     process.env.GROQ_API_KEY = ''; // ensure it's defined (empty) so groq-sdk doesn't throw on construction
 }
 
@@ -52,7 +53,7 @@ app.use(express.static('public', { maxAge: '7d' })); // Cache static assets 7 da
 const apiLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour window
     max: 60, // limit each IP to 60 requests per windowMs
-    message: { error: "Too many requests from this IP. Please try again after an hour." },
+    message: { error: 'Too many requests from this IP. Please try again after an hour.' },
     standardHeaders: true,
     legacyHeaders: false,
 });
@@ -122,6 +123,40 @@ function applyTrustedBoost(result) {
 }
 
 // Routes
+// ── Face API known identities ──
+// Returns the list of players the local Face API can recognize.
+app.get('/api/face/known', async (req, res) => {
+    try {
+        const faceRes = await fetch('http://127.0.0.1:8002/health', { signal: AbortSignal.timeout(3000) });
+        if (faceRes.ok) {
+            const data = await faceRes.json();
+            res.json({
+                available: true,
+                known_faces_count: data.known_faces_count,
+                players: [
+                    'cristiano ronaldo', 'de bruyne', 'haaland', 'harry kane',
+                    'jude bellingham', 'lewandowski',
+                    'lionel messi', 'mbappe', 'michael olise', 'neymar',
+                    'salah', 'vinicius jr'
+                ]
+            });
+        } else {
+            res.json({ available: false, known_faces_count: 0, players: [] });
+        }
+    } catch {
+        res.json({ available: false, known_faces_count: 0, players: [] });
+    }
+});
+
+// ── Standalone ZeroGPT-style AI text detector ──
+// Does NOT require GROQ_API_KEY. Uses local statistical analysis only.
+app.post('/api/detect/text', (req, res) => {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'Text is required' });
+    const result = detectText(text);
+    res.json(result);
+});
+
 app.post('/api/analyze/text', async (req, res) => {
     try {
         const { text } = req.body;
@@ -253,7 +288,7 @@ app.use((err, req, res, next) => {
         }
         return res.status(400).json({ error: `Upload error: ${err.message}` });
     } else if (err) {
-        console.error("Global Error:", err);
+        console.error('Global Error:', err);
         return res.status(500).json({ error: 'An unexpected server error occurred.' });
     }
     next();
@@ -283,6 +318,8 @@ function startServer(port) {
 // If any model file is missing, automatically run auto_train.py in the background.
 // The server boots immediately and starts serving — ML endpoints gracefully degrade
 // until training finishes and the Python APIs reload the new model files.
+let textApiProcess = null, imageApiProcess = null, faceApiProcess = null;
+
 const MODEL_FILES = [
     { path: path.join(__dirname, 'fake_news_model.pkl'),      label: 'Text fake-news model' },
     { path: path.join(__dirname, 'fake_news_vectorizer.pkl'), label: 'Text vectorizer' },
@@ -338,7 +375,6 @@ if (missingModels.length > 0) {
 
 // --- Start Python ML APIs Automatically ---
 // Skip spawning in test mode to keep integration tests fast
-let textApiProcess = null, imageApiProcess = null, faceApiProcess = null;
 if (process.env.NODE_ENV !== 'test') {
     textApiProcess = spawn('python', ['python_api.py'], { cwd: __dirname });
     textApiProcess.stdout.on('data', (data) => console.log(`[ML Text API] ${data.toString().trim()}`));
@@ -361,18 +397,23 @@ const API_HEALTH_URLS = [
     { name: 'Face ID', url: 'http://127.0.0.1:8002/health' },
 ];
 
-async function checkApiHealth() {
+async function checkApiHealth(retries = 3, delay = 5000) {
     for (const api of API_HEALTH_URLS) {
-        try {
-            const res = await fetch(api.url, { signal: AbortSignal.timeout(3000) });
-            if (res.ok) {
-                const data = await res.json();
-                console.log(`[Health] ${api.name} API OK: ${JSON.stringify(data)}`);
-            } else {
-                console.error(`[Health] ${api.name} API returned ${res.status}`);
+        for (let attempt = 1; attempt <= retries; attempt++) {
+            try {
+                const res = await fetch(api.url, { signal: AbortSignal.timeout(5000) });
+                if (res.ok) {
+                    const data = await res.json();
+                    console.log(`[Health] ${api.name} API OK: ${JSON.stringify(data)}`);
+                    break;
+                }
+            } catch {
+                if (attempt < retries) {
+                    await new Promise(r => setTimeout(r, delay));
+                } else {
+                    console.warn(`[Health] ${api.name} API unreachable after ${retries} retries — endpoints will degrade gracefully`);
+                }
             }
-        } catch {
-            console.warn(`[Health] ${api.name} API unreachable`);
         }
     }
 }
@@ -382,7 +423,7 @@ async function checkApiHealth() {
 if (process.env.NODE_ENV !== 'test') {
     setTimeout(async () => {
         await checkApiHealth();
-        const healthInterval = setInterval(checkApiHealth, 60000);
+        const healthInterval = setInterval(() => checkApiHealth(1, 0), 60000);
         healthInterval.unref();
     }, 5000);
 }
@@ -397,7 +438,9 @@ process.on('exit', killAll);
 process.on('SIGINT', () => { killAll(); process.exit(); });
 
 // Only start when run directly (not imported as a module)
-const isMainModule = process.argv[1] && (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}` || !process.argv[1]);
+// Decode URL-encoded path (e.g., %20 for spaces on Windows) before comparing
+const decodedPath = decodeURIComponent(import.meta.url);
+const isMainModule = process.argv[1] && (decodedPath === `file:///${process.argv[1].replace(/\\/g, '/')}` || !process.argv[1]);
 if (isMainModule || process.env.START_SERVER === '1') {
     startServer(PORT);
 }

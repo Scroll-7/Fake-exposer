@@ -11,14 +11,22 @@ from insightface.app import FaceAnalysis
 
 app = FastAPI()
 
-KNOWN_FACES_DIR = "known_faces"
-UPLOADS_DIR = "uploads"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+KNOWN_FACES_DIR = os.path.join(BASE_DIR, "known_faces")
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-print("Initializing InsightFace model (Buffalo_L)...")
+print("Initializing InsightFace model (Buffalo_L) on CPU...")
+# ctx_id=0 = first GPU, ctx_id=-1 = CPU
+# Use CPU when no GPU is available to avoid crashes
+import onnxruntime
+providers = onnxruntime.get_available_providers()
+has_gpu = any('CUDA' in p or 'TensorRT' in p for p in providers)
+ctx_id = 0 if has_gpu else -1
+print(f"  GPU available: {has_gpu}, using ctx_id={ctx_id}")
 face_app = FaceAnalysis(name='buffalo_l')
-face_app.prepare(ctx_id=0, det_size=(640, 640))
+face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
 
 # In-memory store of known face embeddings
 # dict format: {"player_name": np.array(embedding)}

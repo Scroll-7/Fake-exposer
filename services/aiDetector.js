@@ -3,6 +3,7 @@
  * Uses Gemini's strong visual analysis to detect AI-generated/edited images.
  * Returns { aiProbability: 0-100, isAI: boolean, reasoning: string, artifacts: string[] }
  */
+import { withRetry } from './retry.js';
 
 // Rotate through available API keys
 let keyIndex = 0;
@@ -160,7 +161,7 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
         for (const model of GEMINI_MODELS) {
             console.log(`Sending image to Gemini model: ${model} (key index ${keyIndex - 1})...`);
             const startTime = Date.now();
-            const r = await fetch(
+            const r = await withRetry(() => fetch(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
                 {
                     method: 'POST',
@@ -175,12 +176,12 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
                         generationConfig: { 
                             temperature: 0.05, 
                             maxOutputTokens: 2048,
-                            responseMimeType: "application/json"
+                            responseMimeType: 'application/json'
                         }
                     }),
                     signal: AbortSignal.timeout(45000)
                 }
-            );
+            ), { maxRetries: 2, onRetry: (err, a) => console.warn(`Gemini ${model} retry ${a}: ${err.message}`) });
             console.log(`Gemini ${model} fetch completed in ${Date.now() - startTime}ms, status=${r.status}`);
 
             if (r.status === 503 || r.status === 429) {

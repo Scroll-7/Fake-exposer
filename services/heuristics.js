@@ -22,7 +22,7 @@ export function detectExtremePhysiqueCasualSetting(description) {
     const hasCasualSetting = CASUAL_SETTING_WORDS.some(w => new RegExp(w).test(d));
 
     if (hasExtremePhysique && hasCasualSetting) {
-        return `Image description indicates an EXTREME/COMPETITION-LEVEL physique (e.g. shredded, vascular, six-pack) in a CASUAL everyday setting (mirror, bathroom, bedroom). This specific combination is statistically very unlikely to be a natural unedited photo. AI muscle enhancement apps commonly produce exactly this result.`;
+        return 'Image description indicates an EXTREME/COMPETITION-LEVEL physique (e.g. shredded, vascular, six-pack) in a CASUAL everyday setting (mirror, bathroom, bedroom). This specific combination is statistically very unlikely to be a natural unedited photo. AI muscle enhancement apps commonly produce exactly this result.';
     }
 
     return null;
@@ -67,11 +67,11 @@ export function detectAiPortrait(description) {
     const hasFace = FACE_SIGNALS.some(w => d.includes(w));
 
     if (hasUniformBg && hasPortraitFraming && hasFace && !hasRealContext) {
-        return `Image matches the classic AI-generated portrait signature: uniform/neutral background, centered forward-facing portrait, no real-world environmental context. AI image generators (Gemini, DALL-E, Midjourney) consistently produce this exact pattern.`;
+        return 'Image matches the classic AI-generated portrait signature: uniform/neutral background, centered forward-facing portrait, no real-world environmental context. AI image generators (Gemini, DALL-E, Midjourney) consistently produce this exact pattern.';
     }
 
     if (hasUniformBg && hasFace && hasPerfectQuality && !hasRealContext) {
-        return `Image has a uniform neutral background with studio-quality rendering, no real-world context — a common signature of AI portrait generators.`;
+        return 'Image has a uniform neutral background with studio-quality rendering, no real-world context — a common signature of AI portrait generators.';
     }
 
     return null;

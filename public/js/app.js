@@ -337,6 +337,15 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelector('.meter-card').appendChild(badge);
         }
 
+        // ── Face identified badge ──
+        const faceBadge = document.getElementById('face-badge');
+        if (data.face_identified) {
+            faceBadge.innerHTML = `<span class="badge-icon">👤</span> ${data.face_identified}`;
+            faceBadge.classList.remove('hidden');
+        } else {
+            faceBadge.classList.add('hidden');
+        }
+
         // ── Verdict & summary ──
         const verdictEl = document.getElementById('verdict-text');
         verdictEl.textContent = data.verdict;
@@ -350,6 +359,91 @@ document.addEventListener('DOMContentLoaded', () => {
         populateList('red-flags-list', data.red_flags || ['None detected']);
         populateList('green-flags-list', data.green_flags || ['None detected']);
         populateList('recommendations-list', data.recommendations || []);
+    }
+
+    // ── ZeroGPT-style AI Detector Tab ──
+    const analyzeDetectorBtn = document.getElementById('analyze-detector-btn');
+    const detectorInput = document.getElementById('detector-input');
+    const detectorResults = document.getElementById('detector-results');
+
+    analyzeDetectorBtn.addEventListener('click', async () => {
+        const text = detectorInput.value.trim();
+        if (!text) return showToast('Please enter some text to analyze.');
+        if (text.length < 10) return showToast('Please enter at least 10 characters.');
+
+        setLoading(analyzeDetectorBtn, true);
+        detectorResults.classList.add('hidden');
+        try {
+            const res = await fetch('/api/detect/text', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text }),
+            });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+            renderDetectorResults(data);
+        } catch (error) {
+            showToast(error.message);
+        } finally {
+            setLoading(analyzeDetectorBtn, false);
+        }
+    });
+
+    function renderDetectorResults(data) {
+        detectorResults.classList.remove('hidden');
+
+        const score = data.overallScore || 0;
+
+        // Gauge
+        const gauge = document.getElementById('detector-gauge-fill');
+        const label = document.getElementById('detector-gauge-label');
+        let color;
+        if (score >= 70) color = '#ef4444';
+        else if (score >= 40) color = '#f59e0b';
+        else color = '#10b981';
+        gauge.style.background = color;
+        gauge.style.width = `${score}%`;
+        label.textContent = `${score}% AI`;
+        label.style.color = color;
+
+        // Metrics - with bar charts
+        const metricIds = [
+            { id: 'formality', label: 'Formality' },
+            { id: 'perplexity', label: 'Perplexity' },
+            { id: 'burstiness', label: 'Burstiness' },
+            { id: 'vocabulary', label: 'Vocabulary' },
+            { id: 'repetition', label: 'Repetition' },
+            { id: 'starts', label: 'Starts' },
+            { id: 'punctuation', label: 'Punctuation' },
+        ];
+        metricIds.forEach(({ id }) => {
+            const valEl = document.getElementById(`det-${id}`);
+            const fillEl = document.getElementById(`det-${id}-fill`);
+            const value = data[id] ?? 0;
+            valEl.textContent = `${Math.round(value)}%`;
+            valEl.style.color = value >= 70 ? '#ef4444' : value >= 40 ? '#f59e0b' : '#10b981';
+            fillEl.style.width = `${value}%`;
+            fillEl.style.background = value >= 70 ? '#ef4444' : value >= 40 ? '#f59e0b' : '#10b981';
+        });
+
+        // Flagged percentage
+        const flagged = data.aiSentencePercentage || 0;
+        document.getElementById('det-flagged').textContent = `${Math.round(flagged)}%`;
+        document.getElementById('det-flagged').style.color = flagged >= 50 ? '#ef4444' : '#10b981';
+        document.getElementById('det-flagged-fill').style.width = `${flagged}%`;
+        document.getElementById('det-flagged-fill').style.background = flagged >= 50 ? '#ef4444' : '#10b981';
+
+        // Sentence highlighting
+        const container = document.getElementById('detector-sentences');
+        container.innerHTML = '';
+        if (data.sentences && data.sentences.length > 0) {
+            data.sentences.forEach(s => {
+                const div = document.createElement('div');
+                div.className = `detector-sentence ${s.isAi ? 'ai' : 'human'}`;
+                div.textContent = s.sentence;
+                container.appendChild(div);
+            });
+        }
     }
 
     function populateList(elementId, items) {

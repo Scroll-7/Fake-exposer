@@ -52,6 +52,7 @@
                             <h3 id="verdict-text" class="verdict">Analyzing...</h3>
                             <p id="summary-text" class="summary"></p>
                         </div>
+                        <div id="face-badge" class="face-badge hidden"></div>
                     </div>
 
                     <div class="details-card">
@@ -108,6 +109,7 @@
                 <button class="tab-btn active" data-tab="text">📝 Text</button>
                 <button class="tab-btn" data-tab="url">🔗 URL</button>
                 <button class="tab-btn" data-tab="image">📸 Screenshot</button>
+                <button class="tab-btn" data-tab="detector">🤖 AI Detector</button>
             </div>
 
                 <div class="tab-content">
@@ -149,6 +151,35 @@
                             <span class="btn-text">Analyze Image</span>
                             <span class="spinner hidden"></span>
                         </button>
+                    </div>
+
+                    <!-- AI Detector (ZeroGPT-style, no API key needed) -->
+                    <div class="tab-pane" id="tab-detector">
+                        <p class="detector-subtitle">Statistical AI text detection — simulates ZeroGPT's DeepAnalyse™ methodology. No API key required, runs locally in the browser.</p>
+                        <textarea id="detector-input" placeholder="Paste text here to check if it was written by AI..." rows="8"></textarea>
+                        <button class="primary-btn analyze-btn" id="analyze-detector-btn">
+                            <span class="btn-text">Check for AI</span>
+                            <span class="spinner hidden"></span>
+                        </button>
+                        <div id="detector-results" class="detector-results hidden">
+                            <div class="detector-gauge">
+                                <div class="gauge-bar">
+                                    <div class="gauge-fill" id="detector-gauge-fill"></div>
+                                </div>
+                                <span class="gauge-label" id="detector-gauge-label">0% AI</span>
+                            </div>
+                            <div class="detector-metrics">
+                                <div class="metric"><span class="metric-label">Formality</span><div class="metric-bar"><div class="metric-fill" id="det-formality-fill"></div></div><span class="metric-val" id="det-formality">-</span></div>
+                                <div class="metric"><span class="metric-label">Perplexity</span><div class="metric-bar"><div class="metric-fill" id="det-perplexity-fill"></div></div><span class="metric-val" id="det-perplexity">-</span></div>
+                                <div class="metric"><span class="metric-label">Burstiness</span><div class="metric-bar"><div class="metric-fill" id="det-burstiness-fill"></div></div><span class="metric-val" id="det-burstiness">-</span></div>
+                                <div class="metric"><span class="metric-label">Vocabulary</span><div class="metric-bar"><div class="metric-fill" id="det-vocabulary-fill"></div></div><span class="metric-val" id="det-vocabulary">-</span></div>
+                                <div class="metric"><span class="metric-label">Repetition</span><div class="metric-bar"><div class="metric-fill" id="det-repetition-fill"></div></div><span class="metric-val" id="det-repetition">-</span></div>
+                                <div class="metric"><span class="metric-label">Starts</span><div class="metric-bar"><div class="metric-fill" id="det-starts-fill"></div></div><span class="metric-val" id="det-starts">-</span></div>
+                                <div class="metric"><span class="metric-label">Punctuation</span><div class="metric-bar"><div class="metric-fill" id="det-punctuation-fill"></div></div><span class="metric-val" id="det-punctuation">-</span></div>
+                                <div class="metric"><span class="metric-label">Flagged</span><div class="metric-bar"><div class="metric-fill" id="det-flagged-fill"></div></div><span class="metric-val" id="det-flagged">-</span></div>
+                            </div>
+                            <div class="detector-sentences" id="detector-sentences"></div>
+                        </div>
                     </div>
                 </div>
             </section>

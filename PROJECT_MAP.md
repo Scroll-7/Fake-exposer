@@ -21,11 +21,14 @@
 ```
 server.js
 ├── services/
-│   ├── groq.js           (664 lines)  — Core orchestration
+│   ├── retry.js          (27 lines)   — `withRetry()` exponential-backoff utility
+│   ├── groq.js           (760 lines)  — Core orchestration
 │   ├── heuristics.js     (79 lines)   — Pure rule-based AI/heuristic detection
-│   ├── sportsKB.js       (171 lines)  — Player/club knowledge base + jersey matching
-│   ├── aiDetector.js     (259 lines)  — Gemini AI image forensics
-│   └── scraper.js        (120 lines)  — URL scraping (Jina) + web search (DDG + Jina fallback)
+│   ├── sportsKB.js       (195 lines)  — Player/club knowledge base + jersey matching + findTeamInText()
+│   ├── aiDetector.js     (303 lines)  — Gemini AI image forensics (retry added)
+│   ├── textDetector.js   (400+ lines) — ZeroGPT-style AI text detector (7-metric ensemble)
+│   └── scraper.js        (135 lines)  — URL scraping (Jina) + web search (DDG + Jina fallback)
+├── nonescape-mini-v0.onnx  — (83 MB)  Nonescape AI image detection ONNX model (Apache 2.0)
 ├── test/
 │   ├── heuristics.test.js  — 11 tests
 │   ├── sportsKB.test.js    — 12 tests
@@ -68,15 +71,18 @@ POST /api/analyze/url { url }
 POST /api/analyze/image (multipart: file + optional context)
   └─ Multer: validate MIME type, <5MB, save to uploads/
   └─ FILENAME check (heuristics.js) → immediate 5-score fake if match
-  └─ STEP 0: Face API (port 8002 /recognize) → faceIdOverride
-  └─ PRE-STEP: Gemini AI Detection (aiDetector.js)
-  └─ STEP 1: Groq Vision — describe image
-  └─ STEP 2: searchWeb() — DuckDuckGo using description
-  └─ STEP 1.5: detectJerseyMismatch() — local KB (sportsKB.js)
-  └─ STEP 2.5: Heuristics (heuristics.js) — physique, portrait, filename
-  └─ STEP 3: Groq Vision — full analysis with all context
-  └─ POST-STEP-3: Re-check jersey mismatch on LLM output
-  └─ MERGE: AI override, jersey mismatch cap, heuristic caps
+  └─ PARALLEL (Promise.all):
+  │   ├─ Face API (port 8002 /recognize) → faceIdOverride
+  │   ├─ Gemini AI Detection (aiDetector.js)
+  │   ├─ Nonescape ONNX (port 8001 /detect_ai) → ai probability
+  │   └─ STEP 1: Groq Vision — describe image (250 tokens)
+  ├─ searchWeb() removed from image path
+  ├─ STEP 1.5: detectJerseyMismatch() on description + userContext + faceId
+  ├─ STEP 1.5b: findTeamInText() fallback — unverifiable-identity cap
+  ├─ STEP 2.5: Heuristics (heuristics.js) — physique, portrait, filename
+  └─ STEP 3: Groq Vision — full analysis with all context + nonescapeNote
+  └─ POST-STEP-3: Re-check jersey mismatch on LLM output + userContext
+  └─ MERGE: AI override, Nonescape cap, jersey mismatch cap, heuristic caps, unverifiable cap
   └─ FINAL: Image classifier (port 8001 /predict_animal)
   └─ Cleanup: delete temp uploaded file
   └─ applyTrustedBoost() → response
@@ -168,6 +174,15 @@ server.js → every 60s:
 | No static asset caching | FIXED — added `maxAge: '7d'` to `express.static`. Browser caches frontend files. |
 | No integration tests | FIXED — `test/server.test.js` now auto-starts Express on a random port and tests static serving, validation (400s), CORS, 404s, compression, and cache headers. 7 integration tests. |
 | Frontend has no loading feedback | FIXED — added step-based progress bar with animated indicators per analysis type (text/URL/image). |
+| No retry for transient API failures | FIXED — created `services/retry.js` with `withRetry()` (exponential backoff). Applied across Groq text analysis, Groq vision (timeouts now try next model), Gemini model fetch, and Jina URL scraping. |
+| TDZ ReferenceError in auto-trainer | FIXED — moved `let textApiProcess = null` etc. before the auto-trainer block (was after, causing TDZ crash on training completion). |
+| isMainModule broken on Windows with spaces | FIXED — added `decodeURIComponent()` before comparing `import.meta.url` with `process.argv[1]`. |
+| Duplicate dynamic import('form-data') | FIXED — hoisted to top-level `import FormData from 'form-data'`. |
+| searchJina silently swallows all errors | FIXED — added `console.warn` with error message to the empty catch block. |
+| server.test.js after hook doesn't await close | FIXED — `after` hook now returns a Promise that resolves when `server.close()` callback fires. |
+| No dedicated AI-vs-real image classifier | FIXED — added NonescapeClassifierMini (EfficientNet, 82.7MB) as ONNX model. `/detect_ai` endpoint on port 8001. Runs in parallel with Gemini. Score cap at 30 when >65% AI probability. |
+| Jersey mismatch misses face-swapped fakes | FIXED — Step 1 prompt now REQUIRES naming ultra-famous players from face when unmistakable. Mismatch check includes userContext + faceIdOverride. New fallback: if team found but NO player name in any source, caps at 35 as "unverifiable identity". |
+| No ZeroGPT-style text AI detector | FIXED — built `services/textDetector.js` with 7-metric ensemble (formality, perplexity, burstiness, vocabulary, repetition, sentence starts, punctuation). Standalone endpoint `POST /api/detect/text` + sentence highlighting. Integrated into text pipeline. No API key required. |
 
 ---
 
@@ -188,3 +203,7 @@ server.js → every 60s:
 | M11 | README + scraper tests | ✅ DONE | `README.md` with full docs. 7 new scraper tests. |
 | M12 | Remove unreliable Gemini sports facial recognition | ✅ DONE | `geminiSportsIdentityCheck()` removed. Step 1 prompt changed to only ID player from visible jersey text. Step 3 fact-check simplified. Face API + local KB + visible text are the only identity sources. |
 | M13 | Performance optimization (zero-cost) | ✅ DONE | Parallelized Face API + Gemini + Groq Step 1 (~10s saved). Removed `searchWeb()` from image path (~5-10s saved). Groq Step 1 tokens 500→250. gzip compression + 7d static cache. |
+| M14 | Retry logic + reliability polish | ✅ DONE | `withRetry()` utility with exponential backoff. Applied to: Groq text analysis, Groq vision model timeouts, Gemini model fetch, Jina URL scraping. Also: hoisted `form-data` to top-level import, fixed `isMainModule` URL-encoding on Windows, fixed TDZ `ReferenceError` in auto-trainer, made `server.close()` async in tests, `.unref()` on all timers. |
+| M15 | Nonescape local AI detection model | ✅ DONE | Downloaded NonescapeClassifierMini (EfficientNet, 82.7MB, Apache 2.0), exported to ONNX. Added `/detect_ai` endpoint to `animal_api.py`. Runs in parallel with Face API + Gemini + Groq Step 1. Score caps at 30 if >65% AI probability. |
+| M16 | Jersey mismatch + identity fallback | ✅ DONE | Relaxed Step 1 prompt: LLM MUST name ultra-famous players from face (not just jersey text). Jersey mismatch check now scans `userContext` + `faceIdOverride` too. Added `findTeamInText()` and unverifiable-identity fallback (cap at 35 when team found but no player name in any source). |
+| M17 | ZeroGPT-style AI text detector | ✅ DONE | \services/textDetector.js\ — 7-metric multi-stage ensemble: formality (colloquial/AI-vocab ratio), perplexity (word frequency rarity), burstiness (sentence length CV), vocabulary diversity, repetition (bigram + transition density), sentence start diversity, punctuation diversity. No API key needed. Exposed at \POST /api/detect/text\ with sentence-level highlighting UI. Integrated into \nalyzeContent()\ pipeline as pre-analysis context and post-hoc score cap. |
