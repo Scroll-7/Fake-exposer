@@ -66,12 +66,8 @@ export function detectAiPortrait(description) {
     const FACE_SIGNALS = ['man', 'woman', 'person', 'individual', 'face', 'young', 'male', 'female', 'subject'];
     const hasFace = FACE_SIGNALS.some(w => d.includes(w));
 
-    if (hasUniformBg && hasPortraitFraming && hasFace && !hasRealContext) {
-        return 'Image matches the classic AI-generated portrait signature: uniform/neutral background, centered forward-facing portrait, no real-world environmental context. AI image generators (Gemini, DALL-E, Midjourney) consistently produce this exact pattern.';
-    }
-
-    if (hasUniformBg && hasFace && hasPerfectQuality && !hasRealContext) {
-        return 'Image has a uniform neutral background with studio-quality rendering, no real-world context — a common signature of AI portrait generators.';
+    if (hasUniformBg && hasPortraitFraming && hasFace && hasPerfectQuality && !hasRealContext) {
+        return 'Image matches the classic AI-generated portrait signature: uniform/neutral background, centered forward-facing portrait, studio-quality rendering, no real-world environmental context. AI image generators (Gemini, DALL-E, Midjourney) consistently produce this exact pattern.';
     }
 
     return null;

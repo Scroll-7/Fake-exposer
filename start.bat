@@ -28,12 +28,9 @@ if not exist "node_modules\" (
     )
 )
 
-:: Install Python deps if missing
-pip show fastapi >nul 2>nul
-if %ERRORLEVEL% neq 0 (
-    echo [INFO] Installing Python dependencies...
-    pip install -r requirements.txt
-)
+:: Install Python deps
+echo [INFO] Installing / verifying Python dependencies...
+pip install -r requirements.txt
 
 echo.
 echo ==========================================

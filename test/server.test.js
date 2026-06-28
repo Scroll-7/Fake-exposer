@@ -101,7 +101,7 @@ describe('Server API Endpoints', () => {
         assert.equal(res.status, 404);
     });
 
-    it('returns JSON error for invalid route', async () => {
+    it('returns JSON error for invalid API route', async () => {
         skipIfOffline();
         const res = await fetch(`${BASE}/api/analyze/nonexistent`, {
             method: 'POST',
@@ -109,6 +109,18 @@ describe('Server API Endpoints', () => {
             body: JSON.stringify({})
         });
         assert.equal(res.status, 404);
+        const data = await res.json();
+        assert.ok(data.error.includes('Not found'));
+    });
+
+    it('returns JSON error for unknown API path', async () => {
+        skipIfOffline();
+        const res = await fetch(`${BASE}/api/unknown/route`, {
+            method: 'GET'
+        });
+        assert.equal(res.status, 404);
+        const data = await res.json();
+        assert.ok(data.error.includes('Not found'));
     });
 
     it('/api/face/known returns face API status', async () => {

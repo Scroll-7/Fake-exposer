@@ -1,11 +1,11 @@
 """
 auto_train.py
-─────────────────────────────────────────────────────────────────────────────
+
 Master training orchestrator for the Fake News Detector project.
 
 Run once and it trains EVERY domain automatically:
-  • Text  → fake_news_model.pkl + fake_news_vectorizer.pkl   (WELFake dataset)
-  • Image → animal_model.onnx                                (AFHQ + humans)
+  - Text  -> fake_news_model.pkl + fake_news_vectorizer.pkl   (WELFake dataset)
+  - Image -> animal_model.onnx                                (AFHQ + humans)
 
 Usage:
   python auto_train.py           # train only what is missing
@@ -13,7 +13,6 @@ Usage:
 
 The script detects which data files are present and skips domains whose data
 is not available, printing clear instructions for what to download.
-─────────────────────────────────────────────────────────────────────────────
 """
 
 import argparse
@@ -30,17 +29,17 @@ BOLD   = "\033[1m"
 RESET  = "\033[0m"
 
 def banner(text):
-    line = "─" * 60
+    line = "-" * 60
     print(f"\n{CYAN}{BOLD}{line}{RESET}")
     print(f"{CYAN}{BOLD}  {text}{RESET}")
     print(f"{CYAN}{BOLD}{line}{RESET}\n")
 
-def ok(text):    print(f"{GREEN}  ✅  {text}{RESET}")
-def warn(text):  print(f"{YELLOW}  ⚠️   {text}{RESET}")
-def err(text):   print(f"{RED}  ❌  {text}{RESET}")
-def info(text):  print(f"  ℹ️   {text}")
+def ok(text):    print(f"{GREEN}[OK] {text}{RESET}")
+def warn(text):  print(f"{YELLOW}[WARN] {text}{RESET}")
+def err(text):   print(f"{RED}[ERR] {text}{RESET}")
+def info(text):  print(f"  [..] {text}")
 
-# ─── Domain definitions ───────────────────────────────────────────────────────
+# --- Domain definitions -------------------------------------------------------
 # Each domain is a dict describing:
 #   name        – human-readable label
 #   data_files  – list of files that must exist to train this domain
@@ -53,7 +52,7 @@ DOMAINS = []  # populated below after the training functions are defined
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DOMAIN 1 — Text fake-news classifier (WELFake)
+#  DOMAIN 1 -- Text fake-news classifier (WELFake)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def train_text_model():
@@ -68,7 +67,7 @@ def train_text_model():
     MODEL_OUT = "fake_news_model.pkl"
     VEC_OUT   = "fake_news_vectorizer.pkl"
 
-    info("Loading WELFake dataset …")
+    info("Loading WELFake dataset ...")
     t0 = time.time()
     df = pd.read_csv(CSV_PATH)
     info(f"Loaded {len(df):,} rows in {time.time()-t0:.1f}s")
@@ -79,22 +78,22 @@ def train_text_model():
 
     info("Label distribution:")
     for label, count in df["label"].value_counts().items():
-        info(f"  label={label} → {count:,} rows")
+        info(f"  label={label} -> {count:,} rows")
 
     X = df["content"]
     y = df["label"]
 
-    info("Splitting data (80 / 20) …")
+    info("Splitting data (80 / 20) ...")
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
 
-    info("Vectorising text (TF-IDF, max 25 000 features) …")
+    info("Vectorising text (TF-IDF, max 25 000 features) ...")
     vectorizer = TfidfVectorizer(max_features=25_000, stop_words="english")
     X_train_tfidf = vectorizer.fit_transform(X_train)
     X_test_tfidf  = vectorizer.transform(X_test)
 
-    info("Training Logistic Regression …")
+    info("Training Logistic Regression ...")
     model = LogisticRegression(max_iter=1000)
     model.fit(X_train_tfidf, y_train)
 
@@ -106,11 +105,11 @@ def train_text_model():
     with open(VEC_OUT, "wb") as f:
         pickle.dump(vectorizer, f)
 
-    ok(f"Saved → {MODEL_OUT}  &  {VEC_OUT}")
+    ok(f"Saved -> {MODEL_OUT}  &  {VEC_OUT}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DOMAIN 2 — Image classifier (cat / dog / wild / humans)
+#  DOMAIN 2 -- Image classifier (cat / dog / wild / humans)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def train_image_model():
@@ -118,8 +117,8 @@ def train_image_model():
     Fine-tune MobileNetV2 on AFHQ (cat/dog/wild) + humans dataset.
 
     Data sources expected in the current directory:
-      archive.zip  — AFHQ dataset  (cat / dog / wild)
-      humans.zip   — Humans images (flat folder structure)
+      archive.zip  -- AFHQ dataset  (cat / dog / wild)
+      humans.zip   -- Humans images (flat folder structure)
 
     If only one zip is present, trains with whatever classes are available.
     """
@@ -138,7 +137,7 @@ def train_image_model():
     DATASET_DIR = "dataset_auto_train_tmp"
     ONNX_OUTPUT = "animal_model.onnx"
     BATCH_SIZE  = 32
-    NUM_EPOCHS  = 1
+    NUM_EPOCHS  = 10
     VAL_SPLIT   = 0.15
     SEED        = 42
     IMG_SIZE    = 224
@@ -169,7 +168,7 @@ def train_image_model():
 
     # ── Extract AFHQ ───────────────────────────────────────────────────────
     if has_afhq:
-        info("Extracting AFHQ (cat / dog / wild) from archive.zip …")
+        info("Extracting AFHQ (cat / dog / wild) from archive.zip ...")
         t0 = time.time()
         with zipfile.ZipFile(AFHQ_ZIP, "r") as z:
             for entry in z.namelist():
@@ -190,11 +189,11 @@ def train_image_model():
                     dst.write(src.read())
         info(f"AFHQ extracted in {time.time()-t0:.1f}s")
     else:
-        warn("archive.zip not found — skipping cat/dog/wild classes")
+        warn("archive.zip not found -- skipping cat/dog/wild classes")
 
     # ── Extract Humans ─────────────────────────────────────────────────────
     if has_humans:
-        info(f"Extracting humans from humans.zip (max {MAX_HUMANS} images) …")
+        info(f"Extracting humans from humans.zip (max {MAX_HUMANS} images) ...")
         t0 = time.time()
         with zipfile.ZipFile(HUMANS_ZIP, "r") as z:
             entries = [
@@ -220,9 +219,9 @@ def train_image_model():
 
         extract_humans(train_e, "train")
         extract_humans(val_e,   "val")
-        info(f"Humans: {len(train_e)} train | {len(val_e)} val — done in {time.time()-t0:.1f}s")
+        info(f"Humans: {len(train_e)} train | {len(val_e)} val -- done in {time.time()-t0:.1f}s")
     else:
-        warn("humans.zip not found — skipping humans class")
+        warn("humans.zip not found -- skipping humans class")
 
     # ── Class counts ───────────────────────────────────────────────────────
     info("Dataset distribution:")
@@ -271,7 +270,7 @@ def train_image_model():
     info(f"Classes detected ({num_classes}): {class_names}")
 
     # ── Build model ────────────────────────────────────────────────────────
-    info(f"Loading pre-trained MobileNetV2 → fine-tuning for {num_classes} classes …")
+    info(f"Loading pre-trained MobileNetV2 -> fine-tuning for {num_classes} classes ...")
     model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
     for param in model.parameters():
         param.requires_grad = False
@@ -327,7 +326,7 @@ def train_image_model():
         model.load_state_dict(best_weights)
 
     # ── Export ONNX ────────────────────────────────────────────────────────
-    info(f"Exporting to {ONNX_OUTPUT} …")
+    info(f"Exporting to {ONNX_OUTPUT} ...")
     model.eval()
     dummy = torch.randn(1, 3, IMG_SIZE, IMG_SIZE, device=device)
     with torch.no_grad():
@@ -339,7 +338,7 @@ def train_image_model():
             dynamo=False,
         )
     size_mb = os.path.getsize(ONNX_OUTPUT) / (1024**2)
-    ok(f"Saved → {ONNX_OUTPUT}  ({size_mb:.1f} MB)   classes: {class_names}")
+    ok(f"Saved -> {ONNX_OUTPUT}  ({size_mb:.1f} MB)   classes: {class_names}")
 
     # ── Cleanup ────────────────────────────────────────────────────────────
     shutil.rmtree(DATASET_DIR)
@@ -352,7 +351,7 @@ def train_image_model():
 
 DOMAINS = [
     {
-        "name":       "Text Fake-News Classifier  (WELFake → TF-IDF + LogReg)",
+        "name":       "Text Fake-News Classifier  (WELFake -> TF-IDF + LogReg)",
         "data_files": ["WELFake_Dataset.csv"],
         "model_files": ["fake_news_model.pkl", "fake_news_vectorizer.pkl"],
         "train_fn":   train_text_model,
@@ -363,15 +362,15 @@ DOMAINS = [
         ),
     },
     {
-        "name":       "Image Classifier  (AFHQ + Humans → MobileNetV2 ONNX)",
+        "name":       "Image Classifier  (AFHQ + Humans -> MobileNetV2 ONNX)",
         "data_files": ["archive.zip", "humans.zip"],    # any one is enough
         "model_files": ["animal_model.onnx"],
         "train_fn":   train_image_model,
         "data_hint":  (
             "Need at least one of:\n"
-            "  archive.zip  — AFHQ dataset (cat/dog/wild)\n"
+            "  archive.zip  -- AFHQ dataset (cat/dog/wild)\n"
             "                 https://www.kaggle.com/datasets/andrewmvd/animal-faces\n"
-            "  humans.zip   — Human face images dataset\n"
+            "  humans.zip   -- Human face images dataset\n"
             "Place the zip file(s) in the project root, then re-run auto_train.py."
         ),
     },
@@ -396,7 +395,7 @@ def main():
     )
     args = parser.parse_args()
 
-    banner("Fake News Detector — Auto Training Pipeline")
+    banner("Fake News Detector -- Auto Training Pipeline")
 
     results = []  # (domain_name, status, detail)
 
@@ -415,7 +414,7 @@ def main():
             print(f"\n  {YELLOW}How to get the data:{RESET}")
             for line in domain["data_hint"].splitlines():
                 print(f"    {line}")
-            results.append((domain["name"], "SKIPPED — data missing", ""))
+            results.append((domain["name"], "SKIPPED -- data missing", ""))
             continue
 
         info(f"Data found: {available_data}")
@@ -425,11 +424,11 @@ def main():
         if trained_files and not args.force:
             ok(f"Already trained: {trained_files}")
             info("Skipping (use --force to retrain).")
-            results.append((domain["name"], "SKIPPED — already trained", ""))
+            results.append((domain["name"], "SKIPPED -- already trained", ""))
             continue
 
         if args.force and trained_files:
-            warn("--force flag set — retraining even though model exists.")
+            warn("--force flag set -- retraining even though model exists.")
 
         # ── Run training ──────────────────────────────────────────────────
         t_start = time.time()
@@ -437,12 +436,12 @@ def main():
             domain["train_fn"]()
             elapsed = time.time() - t_start
             ok(f"Finished in {elapsed:.1f}s")
-            results.append((domain["name"], "✅ TRAINED", f"{elapsed:.1f}s"))
+            results.append((domain["name"], "TRAINED", f"{elapsed:.1f}s"))
         except Exception as exc:
             import traceback
             err(f"Training failed: {exc}")
             traceback.print_exc()
-            results.append((domain["name"], "❌ FAILED", str(exc)))
+            results.append((domain["name"], "FAILED", str(exc)))
 
     # ── Summary ────────────────────────────────────────────────────────────────
     banner("Training Summary")
@@ -454,8 +453,18 @@ def main():
     if not results:
         warn("No domains were processed. Check your --domain argument.")
 
+    trained_any = any("TRAINED" in s for _, s, _ in results)
+    had_data = any("SKIPPED -- data missing" not in s for _, s, _ in results)
+
     print()
+
+    if not had_data:
+        err("No training data found for any domain. See instructions above.")
+        return 1
+    if not trained_any and results:
+        warn("All domains skipped (already trained or no data).")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

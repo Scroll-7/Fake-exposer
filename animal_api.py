@@ -23,6 +23,8 @@ try:
     print("AI Detection ONNX model loaded successfully!")
 except Exception as e:
     print(f"Error loading AI detection model: {e}")
+    print("Run: npm run download-models")
+    print("Or download manually from: https://github.com/e3ntity/nonescape")
 
 CLASSES = ['cat', 'dog', 'humans', 'wild']
 
