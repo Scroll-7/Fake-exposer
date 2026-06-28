@@ -5,17 +5,17 @@
 | Layer | Technology | Version | Status |
 |-------|-----------|---------|--------|
 | Frontend | Vanilla HTML/CSS/JS | — | ✅ |
-| Backend | Node.js + Express | 4.19.x | ✅ |
-| ML Text API | Python + FastAPI + scikit-learn | — | ✅ (port 8000, /health) |
-| ML Image API | Python + FastAPI + ONNX Runtime | — | ✅ (port 8001, /health) |
-| Face Recognition | Python + FastAPI + InsightFace | buffalo_l | ✅ (port 8002, /health) |
-| Text Model | TF-IDF + Logistic Regression | 25k features | ✅ |
-| Image Model | MobileNetV2 → ONNX | 4 classes (cat/dog/humans/wild) | ✅ |
-| LLM Vision | Groq (LLaMA-4 Scout/Maverick, LLaMA-3.2 Vision) | N/A | ✅ |
-| LLM Text | Groq (LLaMA-3.3-70b) | N/A | ✅ |
-| AI Forensics | Google Gemini (2.5 Flash, 2.0 Flash) | N/A | ✅ |
-| URL Scraping | Jina Reader API | N/A | ✅ |
-| Web Search | DuckDuckGo HTML (fallback) | N/A | ⚠️ Fragile (no API key) |
+| Backend | Node.js + Express | 4.22.x | ✅ |
+| ML Text API | Python + FastAPI + scikit-learn | — | ✅ (port 8000) |
+| ML Image API | Python + FastAPI + ONNX Runtime | — | ✅ (port 8001) |
+| Face Recognition | Python + FastAPI + InsightFace | buffalo_l | ✅ (port 8002) |
+| Text Model | TF-IDF + Logistic Regression | 25k features | ❌ Untrained (no data) |
+| Image Model | MobileNetV2 → ONNX | 4 classes (cat/dog/humans/wild) | ❌ Untrained (no data) |
+| LLM Vision | Groq (LLaMA-4 Scout/Maverick, LLaMA-3.2 Vision) | — | ✅ |
+| LLM Text | Groq (LLaMA-3.3-70b) | — | ✅ |
+| AI Forensics | Google Gemini (2.5 Flash, 2.0 Flash) | — | ✅ |
+| URL Scraping | Jina Reader API | — | ✅ |
+| Web Search | DuckDuckGo HTML (fallback) | — | ⚠️ Fragile |
 
 **Service Architecture (refactored):**
 ```
@@ -137,11 +137,20 @@ server.js → every 60s:
 
 ## [ORPHANS & PENDING]
 
-*None — all identified issues have been resolved.*
+### Current Issues
+| Item | Location | Impact | Action Needed |
+|------|----------|--------|---------------|
+| `nonescape-mini-v0.onnx` missing | `animal_api.py:22` | `/detect_ai` degraded | Run `npm run download-models` or download manually from GitHub |
+| `WELFake_Dataset.csv` missing | Root | Text model not trained | Download from Kaggle and place in root |
+| `archive.zip` / `humans.zip` missing | Root | Image model not trained | Download AFHQ from Kaggle + human faces zip |
 
 ### Resolved Items ✅
 | Item | Resolution |
 |------|-----------|
+| `auto_train.py` UnicodeEncodeError on Windows | FIXED — replaced all non-ASCII chars (`─`, `→`, `…`, `—`, emoji) in `print()` calls with ASCII. No more cp1252 crash. |
+| `auto_train.py` NUM_EPOCHS=1 (garbage model) | FIXED — bumped to 10 epochs |
+| `eslint.config.js` invalid rule `preserve-caught-error` | REMOVED — not a real ESLint rule, silently ignored |
+| `start.bat` only checks `fastapi` pip package | FIXED — now runs `pip install -r requirements.txt` unconditionally |
 | `services/ocr.js` broken | DELETED — unused, broken env var reference |
 | `imageCache` + `saveCache()` dead code | REMOVED — undefined `CACHE_FILE` variable |
 | `cheerio` unused dep | REMOVED from package.json |
@@ -150,39 +159,36 @@ server.js → every 60s:
 | Face API temp files not cleaned | FIXED — now writes to `uploads/` dir, cleaned by server cleanup job |
 | No `/health` endpoints | ADDED — all 3 Python APIs expose `/health` |
 | No health check polling | ADDED — server polls every 60s |
-| No test suite | ADDED — 38 tests (31 unit + 7 integration). `npm test` runs all. Integration tests auto-start the Express server. |
-| `groq.js` monolith (1166 lines) | REFACTORED → 711 lines + extracted heuristics (79), sportsKB (171), web search into scraper (55) |
-| No requirements.txt | ADDED — `requirements.txt` with pinned Python deps |
-| Startup exits on missing GROQ_API_KEY | FIXED — warning+degradation instead of `process.exit(1)`. Groq endpoints return clear error. 2 tests added. |
-| API keys leaked in repo | FIXED — user rotated keys. No keys were in git history (.env was already gitignored). Old keys removed from `.env`. |
-| `GEMINI_API_KEYS` as CSV array | FIXED — reduced to single key. |
-| Rate limiter (15->60 req/hr) | BUMPED — `windowMs: 60min, max: 60`. Adequate for interactive image analysis (~30s/req). |
-| Duplicate training scripts | DELETED — `train_model.py`, `train_human_model.py`, `kaggle_script.py` all removed; `auto_train.py` covers both text + image domains. |
-| Face API not spawned | FIXED — `face_api.py` now auto-launched by server.js with health checks and graceful shutdown. |
-| `start.bat` fragile | REWRITTEN — single-window launcher with prereq checks, auto `npm install`, auto `pip install`, error handling. Server orchestrates all Python APIs internally. |
-| `searchWeb()` DuckDuckGo scraper fragile | HARDENED — 4 falling regex patterns + lite endpoint fallback + better text cleaning. |
-| No CI/CD | ADDED — `.github/workflows/ci.yml` runs `npm test` on push/PR. |
-| Frontend | AUDITED — no bugs found. Clean HTML/CSS/JS. |
-| No README | ADDED — `README.md` with setup, architecture, scripts reference. |
-| No scraper tests | ADDED — 7 tests for `searchWeb` + `scrapeUrl` with mocked fetch. |
-| Gemini Sports identity check unreliable | REMOVED — `geminiSportsIdentityCheck()` deleted from groq.js. Sports identity now relies solely on visible jersey text (name/number) + local KB mismatch detection. Player facial recognition from AI was frequently wrong. |
-| SportsKB coverage gap | FIXED — added Frenkie de Jong and Michael Olise aliases to player database. 12 sportsKB tests total. |
-| Face API multipart upload broken | FIXED — replaced built-in `FormData()` with `form-data` npm package for reliable multipart uploads to Python face microservice. |
-| Image analysis serial (Face → Gemini → Step 1) | FIXED — now runs Face API + Gemini + Step 1 in parallel via `Promise.all()`, saving ~10s. |
-| Web search in image path (slow + unreliable) | REMOVED — `searchWeb()` call removed from image analysis. It's still used in text/URL paths. Added Jina search fallback (`s.jina.ai`) for text path. |
-| No gzip compression | FIXED — added `compression()` middleware. ~70% smaller HTML/CSS/JS payloads. |
-| No static asset caching | FIXED — added `maxAge: '7d'` to `express.static`. Browser caches frontend files. |
-| No integration tests | FIXED — `test/server.test.js` now auto-starts Express on a random port and tests static serving, validation (400s), CORS, 404s, compression, and cache headers. 7 integration tests. |
-| Frontend has no loading feedback | FIXED — added step-based progress bar with animated indicators per analysis type (text/URL/image). |
-| No retry for transient API failures | FIXED — created `services/retry.js` with `withRetry()` (exponential backoff). Applied across Groq text analysis, Groq vision (timeouts now try next model), Gemini model fetch, and Jina URL scraping. |
-| TDZ ReferenceError in auto-trainer | FIXED — moved `let textApiProcess = null` etc. before the auto-trainer block (was after, causing TDZ crash on training completion). |
-| isMainModule broken on Windows with spaces | FIXED — added `decodeURIComponent()` before comparing `import.meta.url` with `process.argv[1]`. |
-| Duplicate dynamic import('form-data') | FIXED — hoisted to top-level `import FormData from 'form-data'`. |
-| searchJina silently swallows all errors | FIXED — added `console.warn` with error message to the empty catch block. |
-| server.test.js after hook doesn't await close | FIXED — `after` hook now returns a Promise that resolves when `server.close()` callback fires. |
-| No dedicated AI-vs-real image classifier | FIXED — added NonescapeClassifierMini (EfficientNet, 82.7MB) as ONNX model. `/detect_ai` endpoint on port 8001. Runs in parallel with Gemini. Score cap at 30 when >65% AI probability. |
-| Jersey mismatch misses face-swapped fakes | FIXED — Step 1 prompt now REQUIRES naming ultra-famous players from face when unmistakable. Mismatch check includes userContext + faceIdOverride. New fallback: if team found but NO player name in any source, caps at 35 as "unverifiable identity". |
-| No ZeroGPT-style text AI detector | FIXED — built `services/textDetector.js` with 7-metric ensemble (formality, perplexity, burstiness, vocabulary, repetition, sentence starts, punctuation). Standalone endpoint `POST /api/detect/text` + sentence highlighting. Integrated into text pipeline. No API key required. |
+| No test suite | ADDED — 39 tests. `npm test` runs all. Integration tests auto-start Express. |
+| `groq.js` monolith (1166 lines) | REFACTORED → 711 lines + extracted heuristics, sportsKB, scraper |
+| No requirements.txt | ADDED — pinned Python deps |
+| Startup exits on missing GROQ_API_KEY | FIXED — warning+degradation, no `process.exit(1)` |
+| API keys leaked in repo | FIXED — user rotated keys. `.env` was already gitignored. |
+| Rate limiter (15->60 req/hr) | BUMPED — adequate for interactive use |
+| Duplicate training scripts | DELETED — `train_model.py`, `train_human_model.py`, `kaggle_script.py` removed |
+| Face API not spawned | FIXED — auto-launched by server.js |
+| `start.bat` fragile | REWRITTEN — single-window launcher |
+| `searchWeb()` DuckDuckGo scraper fragile | HARDENED — 4 regex fallbacks + lite endpoint |
+| No CI/CD | ADDED — `.github/workflows/ci.yml` |
+| No README | ADDED |
+| No scraper tests | ADDED — 7 tests |
+| Gemini sports facial recognition unreliable | REMOVED — relies on visible jersey text + local KB |
+| Face API multipart upload broken | FIXED — uses `form-data` npm package |
+| Image analysis serial (slow) | FIXED — parallel `Promise.all()` saves ~10s |
+| Web search in image path (slow) | REMOVED — text/URL only |
+| No gzip compression | FIXED — `compression()` middleware |
+| No static cache | FIXED — `maxAge: '7d'` |
+| No integration tests | FIXED — 7 tests |
+| No loading feedback | FIXED — progress bar |
+| No retry for transient failures | FIXED — `services/retry.js` + applied to Groq, Gemini, Jina |
+| TDZ ReferenceError in auto-trainer | FIXED |
+| isMainModule broken on Windows spaces | FIXED |
+| Duplicate dynamic import('form-data') | FIXED — hoisted |
+| searchJina silent errors | FIXED — added `console.warn` |
+| server.test.js close not awaited | FIXED |
+| No Nonescape AI classifier | ADDED — /detect_ai endpoint |
+| Jersey mismatch misses face-swapped fakes | FIXED — Step 1 prompt, userContext scan, unverifiable fallback |
+| No ZeroGPT-style AI text detector | ADDED — standalone /api/detect/text with 7 metrics |
 
 ---
 
@@ -206,4 +212,20 @@ server.js → every 60s:
 | M14 | Retry logic + reliability polish | ✅ DONE | `withRetry()` utility with exponential backoff. Applied to: Groq text analysis, Groq vision model timeouts, Gemini model fetch, Jina URL scraping. Also: hoisted `form-data` to top-level import, fixed `isMainModule` URL-encoding on Windows, fixed TDZ `ReferenceError` in auto-trainer, made `server.close()` async in tests, `.unref()` on all timers. |
 | M15 | Nonescape local AI detection model | ✅ DONE | Downloaded NonescapeClassifierMini (EfficientNet, 82.7MB, Apache 2.0), exported to ONNX. Added `/detect_ai` endpoint to `animal_api.py`. Runs in parallel with Face API + Gemini + Groq Step 1. Score caps at 30 if >65% AI probability. |
 | M16 | Jersey mismatch + identity fallback | ✅ DONE | Relaxed Step 1 prompt: LLM MUST name ultra-famous players from face (not just jersey text). Jersey mismatch check now scans `userContext` + `faceIdOverride` too. Added `findTeamInText()` and unverifiable-identity fallback (cap at 35 when team found but no player name in any source). |
-| M17 | ZeroGPT-style AI text detector | ✅ DONE | \services/textDetector.js\ — 7-metric multi-stage ensemble: formality (colloquial/AI-vocab ratio), perplexity (word frequency rarity), burstiness (sentence length CV), vocabulary diversity, repetition (bigram + transition density), sentence start diversity, punctuation diversity. No API key needed. Exposed at \POST /api/detect/text\ with sentence-level highlighting UI. Integrated into \nalyzeContent()\ pipeline as pre-analysis context and post-hoc score cap. |
+| M17 | ZeroGPT-style AI text detector | ✅ DONE | \services/textDetector.js\ — 7-metric multi-stage ensemble: formality (colloquial/AI-vocab ratio), perplexity (word frequency rarity), burstiness (sentence length CV), vocabulary diversity, repetition (bigram + transition density), sentence start diversity, punctuation diversity. No API key needed. Exposed at \POST /api/detect/text\ with sentence-level highlighting UI. Integrated into \analyzeContent()\ pipeline as pre-analysis context and post-hoc score cap. |
+| M18 | Fix Windows cp1252 Unicode crash in auto_train.py | ✅ DONE | Replaced all non-ASCII chars in `print()` calls with ASCII. Auto-trainer no longer crashes on Windows. |
+| M19 | Bump image training epochs | ✅ DONE | NUM_EPOCHS 1 → 10 for meaningful MobileNetV2 fine-tuning |
+| M20 | Fix start.bat pip install | ✅ DONE | Now runs `pip install -r requirements.txt` unconditionally instead of only checking for `fastapi` |
+| M21 | Remove invalid ESLint rule | ✅ DONE | Removed non-existent `preserve-caught-error` from eslint config |
+| M22 | Add nonescape model download hint | ✅ DONE | Clear HuggingFace URL printed when model fails to load |
+| M23 | Add JSON 404 handler for API routes | ✅ DONE | `app.use('/api/*')` returns `{error: "Not found: ..."}` instead of HTML |
+| M24 | Add Python API process watchdog | ✅ DONE | Auto-restarts Python APIs on crash (3s delay). Uses `spawnPythonApi()` helper. |
+| M25 | Create download script for ML models | ✅ DONE | `bin/download-models.ps1` + `npm run download-models` |
+| M26 | Clean auto_train.py docstring and comments | ✅ DONE | Replaced all box-drawing chars with ASCII |
+| M27 | Delete orphan bin/download-face.js | ✅ DONE | Package.json points to Python version only |
+| M28 | Fix download_faces.ps1 path | ✅ DONE | Uses `$PSScriptRoot` instead of hardcoded path |
+| M29 | Fix start.bat pip check | ✅ DONE | Runs `pip install -r requirements.txt` unconditionally |
+| M30 | Remove invalid ESLint rule | ✅ DONE | Removed `preserve-caught-error` (not a real rule) |
+| M31 | Add 404 JSON tests | ✅ DONE | 2 new tests verify JSON error format for unknown API routes |
+| M32 | Fix misleading "All models trained" message | ✅ DONE | `auto_train.py` exits 1 when no data found. `server.js` prints honest message and skips API restart. No more crash loop. |
+| M33 | Increase Face API health check retries | ✅ DONE | Changed from 3x5s to 6x7s giving Face API up to ~65s to initialize (was ~35s). Reduces false \"unreachable\" reports. |

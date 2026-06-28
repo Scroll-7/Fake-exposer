@@ -1,4 +1,8 @@
-$knownDir = "C:\fake news\known_faces"
+# All 32 known face images already exist in known_faces/.
+# This script is kept as a reference for re-downloading if needed.
+# Usage: .\download_faces.ps1
+
+$knownDir = Join-Path $PSScriptRoot "known_faces"
 New-Item -ItemType Directory -Force -Path $knownDir | Out-Null
 
 # Football players (already downloaded, kept for completeness)

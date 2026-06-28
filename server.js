@@ -276,6 +276,12 @@ app.post('/api/analyze/image', upload.single('image'), async (req, res) => {
     }
 });
 
+// --- 404 Handler ---
+// Return JSON for unknown API routes, fall through to static for non-API
+app.use('/api/*', (req, res) => {
+    res.status(404).json({ error: `Not found: ${req.method} ${req.originalUrl}` });
+});
+
 // --- Global Error Handler ---
 // Catch Multer limit errors and prevent HTML crash pages
 app.use((err, req, res, next) => {
@@ -351,23 +357,17 @@ if (missingModels.length > 0) {
     });
     trainer.on('close', (code) => {
         if (code === 0) {
-            console.log('\n✅ Auto-Trainer: All models trained successfully! Restarting Python APIs...');
+            console.log('\n✅ Auto-Trainer: Training complete. Restarting Python APIs...');
+            try { textApiProcess.kill(); } catch {}
+            try { imageApiProcess.kill(); } catch {}
+            try { faceApiProcess.kill(); } catch {}
+            textApiProcess = spawnPythonApi('ML Text API', 'python_api.py', 8000);
+            imageApiProcess = spawnPythonApi('ML Image API', 'animal_api.py', 8001);
+            faceApiProcess = spawnPythonApi('Face API', 'face_api.py', 8002);
         } else {
-            console.error(`\n❌ Auto-Trainer: Training exited with code ${code}. Check logs above.`);
+            console.error(`\n❌ Auto-Trainer: No training data found. ML features will remain offline.`);
+            console.error(`   Add the required data files to the project root and restart.`);
         }
-        // Restart Python APIs so they pick up the freshly trained model files
-        textApiProcess.kill();
-        imageApiProcess.kill();
-        const newTextApi = spawn('python', ['python_api.py'], { cwd: __dirname });
-        newTextApi.stdout.on('data', (d) => console.log(`[ML Text API] ${d.toString().trim()}`));
-        newTextApi.stderr.on('data', (d) => console.error(`[ML Text API Error] ${d.toString().trim()}`));
-        const newImageApi = spawn('python', ['animal_api.py'], { cwd: __dirname });
-        newImageApi.stdout.on('data', (d) => console.log(`[ML Image API] ${d.toString().trim()}`));
-        newImageApi.stderr.on('data', (d) => console.error(`[ML Image API Error] ${d.toString().trim()}`));
-        faceApiProcess.kill();
-        const newFaceApi = spawn('python', ['face_api.py'], { cwd: __dirname });
-        newFaceApi.stdout.on('data', (d) => console.log(`[Face API] ${d.toString().trim()}`));
-        newFaceApi.stderr.on('data', (d) => console.error(`[Face API Error] ${d.toString().trim()}`));
     });
 } else {
     console.log('✅ Auto-Trainer: All model files present — no training needed.');
@@ -375,18 +375,28 @@ if (missingModels.length > 0) {
 
 // --- Start Python ML APIs Automatically ---
 // Skip spawning in test mode to keep integration tests fast
+function spawnPythonApi(name, script, port) {
+    const proc = spawn('python', [script], { cwd: __dirname });
+    proc.stdout.on('data', (data) => console.log(`[${name}] ${data.toString().trim()}`));
+    proc.stderr.on('data', (data) => console.error(`[${name} Error] ${data.toString().trim()}`));
+    proc.on('exit', (code) => {
+        if (code !== 0 && code !== null) {
+            console.error(`[${name}] Process exited code ${code}, restarting in 3s...`);
+            setTimeout(() => {
+                const newProc = spawnPythonApi(name, script, port);
+                if (name === 'ML Text API') textApiProcess = newProc;
+                else if (name === 'ML Image API') imageApiProcess = newProc;
+                else if (name === 'Face API') faceApiProcess = newProc;
+            }, 3000);
+        }
+    });
+    return proc;
+}
+
 if (process.env.NODE_ENV !== 'test') {
-    textApiProcess = spawn('python', ['python_api.py'], { cwd: __dirname });
-    textApiProcess.stdout.on('data', (data) => console.log(`[ML Text API] ${data.toString().trim()}`));
-    textApiProcess.stderr.on('data', (data) => console.error(`[ML Text API Error] ${data.toString().trim()}`));
-
-    imageApiProcess = spawn('python', ['animal_api.py'], { cwd: __dirname });
-    imageApiProcess.stdout.on('data', (data) => console.log(`[ML Image API] ${data.toString().trim()}`));
-    imageApiProcess.stderr.on('data', (data) => console.error(`[ML Image API Error] ${data.toString().trim()}`));
-
-    faceApiProcess = spawn('python', ['face_api.py'], { cwd: __dirname });
-    faceApiProcess.stdout.on('data', (data) => console.log(`[Face API] ${data.toString().trim()}`));
-    faceApiProcess.stderr.on('data', (data) => console.error(`[Face API Error] ${data.toString().trim()}`));
+    textApiProcess = spawnPythonApi('ML Text API', 'python_api.py', 8000);
+    imageApiProcess = spawnPythonApi('ML Image API', 'animal_api.py', 8001);
+    faceApiProcess = spawnPythonApi('Face API', 'face_api.py', 8002);
 } else {
     console.log('[Test mode] Skipping Python API spawning.');
 }
@@ -422,7 +432,7 @@ async function checkApiHealth(retries = 3, delay = 5000) {
 // Skip in test mode so the process exits cleanly after integration tests
 if (process.env.NODE_ENV !== 'test') {
     setTimeout(async () => {
-        await checkApiHealth();
+        await checkApiHealth(6, 7000);
         const healthInterval = setInterval(() => checkApiHealth(1, 0), 60000);
         healthInterval.unref();
     }, 5000);

@@ -57,7 +57,6 @@ export default [
             'array-bracket-spacing': 'off',
             'eol-last': 'off',
             'no-dupe-keys': 'off',
-            'preserve-caught-error': 'off',
         },
     },
     {

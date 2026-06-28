@@ -172,6 +172,7 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
 // Vision models to try in order — if one is over capacity, fall back to the next
 const VISION_MODELS = [
     'meta-llama/llama-4-scout-17b-16e-instruct',
+    'meta-llama/llama-4-maverick-17b-128e-instruct',
     'qwen/qwen3.6-27b',
 ];
 
@@ -686,19 +687,23 @@ Be very specific and honest about uncertainty.`
         // Groq often ignores prompt warnings and returns high scores anyway.
 
         if (portraitWarning && (llmResult.credibility_score ?? 100) > 30) {
-            const cappedScore = 15;
-            console.log(`⚠️ Portrait heuristic cap applied: score ${llmResult.credibility_score} → ${cappedScore}`);
+            const originalScore = llmResult.credibility_score;
+            const penalty = Math.min(40, Math.round(originalScore * 0.55));
+            const adjustedScore = Math.max(5, originalScore - penalty);
+            console.log(`⚠️ Portrait heuristic penalty: score ${originalScore} → ${adjustedScore} (penalty: ${penalty})`);
             return {
                 ...llmResult,
-                credibility_score: cappedScore,
-                verdict: 'Likely AI-Generated Portrait',
+                credibility_score: adjustedScore,
+                verdict: adjustedScore < 30
+                    ? 'Suspicious — Possible AI Portrait'
+                    : llmResult.verdict,
                 red_flags: [
                     '🤖 AI portrait signature detected: uniform/neutral background + centered face + studio lighting + no real-world context',
                     'This exact composition is the default output of AI image generators (Gemini Image, DALL-E, Midjourney, Stable Diffusion)',
                     ...(llmResult.red_flags || []),
                 ],
-                green_flags: [],
-                summary: `Automatic heuristic: ${portraitWarning} ${llmResult.summary || ''}`.trim(),
+                green_flags: adjustedScore < 30 ? [] : (llmResult.green_flags || []),
+                summary: `Heuristic note: ${portraitWarning} ${llmResult.summary || ''}`.trim(),
             };
         }
 
@@ -843,6 +848,85 @@ Be very specific and honest about uncertainty.`
     } catch (error) {
         const detail = error?.error?.message || error?.message || 'Unknown error';
         console.error('Groq image analysis error:', detail, error);
+
+        // ── FALLBACK: When Groq vision is unavailable, return a result from
+        // Gemini + heuristics + local models instead of crashing.
+        const isVisionDown = /vision model|does not support image|unavailable/i.test(detail);
+        if (isVisionDown) {
+            console.warn('Groq vision unavailable — returning degraded result from Gemini + heuristics.');
+
+            // Build fallback result from available data
+            const fallback = {
+                credibility_score: 50,
+                verdict: 'Unable to Complete Full Analysis (Vision Model Unavailable)',
+                bias: 'Unknown',
+                sentiment: 'Neutral',
+                red_flags: [],
+                green_flags: [],
+                summary: 'Groq vision analysis was unavailable. Results are based on local detection models only.',
+                recommendations: ['Try again later when the vision API is available.', 'Consider using Text or URL analysis as an alternative.'],
+                is_trusted_source: false,
+                trusted_source_name: '',
+                face_identified: faceIdOverride || null,
+            };
+
+            // Inject heuristics as red flags
+            if (portraitWarning) {
+                fallback.red_flags.push(`🤖 ${portraitWarning}`);
+                fallback.credibility_score = Math.min(fallback.credibility_score, 35);
+                fallback.summary = `Local heuristic flagged this as a possible AI portrait. ${fallback.summary}`;
+            }
+            if (physiqueWarning) {
+                fallback.red_flags.push(`🏋️ ${physiqueWarning}`);
+                fallback.credibility_score = Math.min(fallback.credibility_score, 30);
+            }
+            if (filenameWarning) {
+                fallback.red_flags.push(`📁 ${filenameWarning}`);
+                fallback.credibility_score = 5;
+                fallback.verdict = 'Confirmed AI-Generated (Filename Reveals AI Origin)';
+            }
+
+            // Inject Gemini result if available
+            if (aiOverride) {
+                const aiFlag = `🤖 Gemini AI Detector: ${aiOverride.ai_probability}% probability of AI generation`;
+                fallback.red_flags.push(aiFlag);
+                if (aiOverride.ai_artifacts?.length) {
+                    aiOverride.ai_artifacts.forEach(a => fallback.red_flags.push(`⚠️ AI artifact: ${a}`));
+                }
+                if (!aiOverride.softWarning) {
+                    fallback.credibility_score = Math.min(fallback.credibility_score, aiOverride.credibility_score);
+                    fallback.verdict = aiOverride.verdict;
+                }
+                if (aiOverride.ai_reasoning) {
+                    fallback.summary = `${aiOverride.ai_reasoning} ${fallback.summary}`;
+                }
+            }
+
+            // Inject Nonescape model result
+            if (nonescapeAiProb !== undefined && nonescapeAiProb > 0.5) {
+                fallback.red_flags.push(`🤖 Local AI Detection Model: ${Math.round(nonescapeAiProb * 100)}% AI probability`);
+                fallback.credibility_score = Math.min(fallback.credibility_score, 30);
+            }
+
+            // Face identification
+            if (faceIdOverride) {
+                fallback.green_flags.push(`👤 Face ID matched: ${faceIdOverride}`);
+                if (!aiOverride) fallback.credibility_score = Math.max(45, fallback.credibility_score);
+            }
+
+            // Jersey mismatch (from local KB)
+            if (jerseyMismatch) {
+                fallback.credibility_score = 8;
+                fallback.verdict = `Fake / Manipulated — ${jerseyMismatch.player} never played for ${jerseyMismatch.jerseyTeam}`;
+                fallback.red_flags.push(`⚽ Jersey mismatch: ${jerseyMismatch.player} has NEVER played for ${jerseyMismatch.jerseyTeam}`);
+                fallback.red_flags.push(`📋 Known clubs: ${jerseyMismatch.knownClubs}`);
+                fallback.summary = jerseyMismatch.mismatchMsg;
+            }
+
+            fallback.credibility_score = Math.max(0, Math.min(100, fallback.credibility_score));
+            return fallback;
+        }
+
         throw new Error(`Image analysis failed: ${detail}`);
     }
 }
