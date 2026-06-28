@@ -125,10 +125,20 @@ describe('detectSportsSuspicion', () => {
 
     it('uses custom findTeamFn when provided', () => {
         const customFind = (text) => text.includes('custom_team') ? 'Custom Team' : null;
-        const result1 = detectSportsSuspicion(null, null, 'jersey custom_team', customFind);
+        const result1 = detectSportsSuspicion(null, null, 'jersey field custom_team', customFind);
         assert.equal(result1, null);
-        const result2 = detectSportsSuspicion(null, null, 'jersey only', customFind);
+        const result2 = detectSportsSuspicion(null, null, 'jersey on a field', customFind);
         assert.ok(result2);
+    });
+
+    it('does not flag non-sports description with single keyword like shirt', () => {
+        const result = detectSportsSuspicion(null, null, 'a woman in a white shirt taking a selfie');
+        assert.equal(result, null);
+    });
+
+    it('does not flag non-sports description with single keyword like player', () => {
+        const result = detectSportsSuspicion(null, null, 'a video player interface on a screen');
+        assert.equal(result, null);
     });
 
 });

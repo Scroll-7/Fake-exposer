@@ -171,8 +171,8 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
 
 // Vision models to try in order — if one is over capacity, fall back to the next
 const VISION_MODELS = [
-    'llama-3.2-90b-vision-preview',
-    'llama-3.2-11b-vision-preview',
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'qwen/qwen3.6-27b',
 ];
 
 async function groqVisionRequest(messages, maxTokens = 500) {
@@ -196,8 +196,9 @@ async function groqVisionRequest(messages, maxTokens = 500) {
             const isOverCapacity = msg.includes('over capacity') || msg.includes('503') || (err?.status === 503);
             const isUnavailable = msg.includes('unavailable') || msg.includes('404') || (err?.status === 404);
             const isNoVision = msg.includes('does not support image input') || msg.includes('does not support images') || msg.includes('image input');
+            const isDecommissioned = msg.includes('decommissioned') || msg.includes('no longer supported');
             const isTransient = /timeout|fetch failed|ECONNRESET|ETIMEDOUT|network/i.test(msg);
-            if (isOverCapacity || isUnavailable || isTransient || isNoVision) {
+            if (isOverCapacity || isUnavailable || isTransient || isNoVision || isDecommissioned) {
                 console.warn(`Model ${model} unavailable (${err?.status || 'err'}): ${msg.slice(0, 120)} — trying next model...`);
                 lastError = err;
                 continue;
@@ -850,11 +851,17 @@ Be very specific and honest about uncertainty.`
 // If we couldn't run the Face API (faceIdOverride is null) AND the image
 // description suggests sports content but no player+team combo was matched,
 // return a suspicion flag. Pure function, easily testable.
-const SPORTS_KEYWORDS = /\b(jersey|kit|shirt|stadium|football|soccer|player|team|club|match|field|pitch|goal|goalie|referee|manager|transfer|badge|sponsor|training|warm.?up|substitute|captain|captaincy)\b/i;
+const SPORTS_KEYWORDS = /\b(jersey|kit|stadium|football|soccer|player|team|club|match|field|pitch|goal|goalie|referee|manager|transfer|badge|sponsor|training|warm.?up|substitute|captain|captaincy)\b/i;
+const SPORTS_KEYWORD_LIST = ['jersey', 'kit', 'stadium', 'football', 'soccer', 'player', 'team', 'club', 'match', 'field', 'pitch', 'goal', 'goalie', 'referee', 'manager', 'transfer', 'badge', 'sponsor', 'training', 'warm-up', 'warmup', 'substitute', 'captain', 'captaincy'];
 
 export function detectSportsSuspicion(faceIdOverride, jerseyMismatch, imageDescription, findTeamFn = findTeamInText) {
     if (faceIdOverride || jerseyMismatch) return null;
-    if (!imageDescription || !SPORTS_KEYWORDS.test(imageDescription)) return null;
+    if (!imageDescription) return null;
+    // Require at least 2 sports keywords to prevent false positives
+    // (e.g., "woman in a shirt taking a selfie" should NOT trigger sports detection)
+    const lowerDesc = imageDescription.toLowerCase();
+    const matchCount = SPORTS_KEYWORD_LIST.filter(kw => lowerDesc.includes(kw)).length;
+    if (matchCount < 2) return null;
     const teamName = findTeamFn(imageDescription);
     if (teamName) return null;
     return 'Sports image detected but the player or team could not be identified. Unverifiable sports images may be altered.';
