@@ -14,13 +14,14 @@ import { spawn } from 'child_process';
 import { analyzeContent, analyzeImage } from './services/groq.js';
 import { analyzeText as detectText } from './services/textDetector.js';
 import { scrapeUrl } from './services/scraper.js';
+import { logger } from './services/logger.js';
 import fs from 'fs';
 
 // In test mode, do NOT load .env so the test-controlled env vars are used
 if (process.env.NODE_ENV !== 'test') {
     dotenv.config();
 } else {
-    console.log('[Test mode] Skipping .env loading.');
+    logger.info('[Test mode] Skipping .env loading.');
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,9 +30,9 @@ const __dirname = path.dirname(__filename);
 // --- Groq API Key Check (non-fatal) ---
 // Server starts regardless — Groq-dependent endpoints return a descriptive error.
 if (!process.env.GROQ_API_KEY) {
-    console.warn('⚠️ GROQ_API_KEY is not set. Text/image analysis via Groq will be unavailable.');
-    console.warn('   The server will still serve static files and Python ML APIs.');
-    console.warn('   Set GROQ_API_KEY in .env to enable full analysis features.');
+    logger.warn('GROQ_API_KEY is not set. Text/image analysis via Groq will be unavailable.');
+    logger.warn('   The server will still serve static files and Python ML APIs.');
+    logger.warn('   Set GROQ_API_KEY in .env to enable full analysis features.');
     process.env.GROQ_API_KEY = ''; // ensure it's defined (empty) so groq-sdk doesn't throw on construction
 }
 
@@ -40,11 +41,52 @@ const PORT = process.env.PORT || 3001;
 
 // Middlewares
 app.use(compression()); // gzip all responses — smaller payloads, faster loads
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", 'https://fonts.googleapis.com', "'unsafe-inline'"],
+            fontSrc: ['https://fonts.gstatic.com'],
+            scriptSrc: ["'self'"],
+            imgSrc: ["'self'", 'data:'],
+            connectSrc: ["'self'"],
+            baseUri: ["'self'"],
+            frameAncestors: ["'none'"],
+            objectSrc: ["'none'"],
+        },
+    },
+    hidePoweredBy: true,
+    crossOriginResourcePolicy: { policy: 'same-origin' },
+    permissionsPolicy: {
+        directives: {
+            camera: [],
+            microphone: [],
+            geolocation: [],
+            usb: [],
+            bluetooth: [],
+            midi: [],
+            'sync-xhr': [],
+            accelerometer: [],
+            gyroscope: [],
+            magnetometer: [],
+            payment: [],
+            fullscreen: [],
+        },
+    },
+}));
 app.use(cors({ origin: false })); // Same-origin only — frontend is served by Express
+
+// HTTPS redirect — skip for localhost dev and already-secure requests
+app.use((req, res, next) => {
+    if (req.secure || req.headers['x-forwarded-proto'] === 'https') return next();
+    const host = req.headers.host || '';
+    if (host.startsWith('localhost') || host.startsWith('127.0.0.1')) return next();
+    res.redirect(301, `https://${host}${req.originalUrl}`);
+});
+
 app.use(express.json({ limit: '10mb' })); // Prevent huge payload DoS
 app.use(hpp()); // Prevent HTTP Parameter Pollution attacks
-app.use(morgan('combined')); // Detailed access logging for security audits
+app.use(morgan('short')); // Minimal request logging
 app.use(express.static('public', { maxAge: '7d' })); // Cache static assets 7 days
 
 // --- Rate Limiting ---
@@ -60,6 +102,25 @@ const apiLimiter = rateLimit({
 
 // Apply rate limiting specifically to the analysis endpoints
 app.use('/api/analyze/', apiLimiter);
+
+// Stricter rate limiter for image analysis (costs real API $$)
+// 15 uploads/hr per IP is plenty for interactive use
+const imageLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 15,
+    message: { error: 'Too many image uploads from this IP. Please try again after an hour.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Rate limiter for the local text detector (cheap, but prevent spam)
+const detectTextLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 120,
+    message: { error: 'Too many requests from this IP. Please try again after an hour.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
 
 // Configure multer for image uploads with a strict 5MB limit and MIME type filtering
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
@@ -90,7 +151,7 @@ const cleanupTimer = setInterval(() => {
                 if (err) return;
                 if (now - stats.mtimeMs > 3600000) {
                     fs.unlink(filePath, unlinkErr => {
-                        if (!unlinkErr) console.log(`🧹 Background cleanup: deleted stale file ${file}`);
+                        if (!unlinkErr) logger.info(`Background cleanup: deleted stale file ${file}`);
                     });
                 }
             });
@@ -98,6 +159,29 @@ const cleanupTimer = setInterval(() => {
     });
 }, 3600000);
 cleanupTimer.unref();
+
+// Magic byte signatures for allowed image types
+const IMAGE_MAGIC_BYTES = {
+    jpeg: [[0xFF, 0xD8, 0xFF]],
+    png: [[0x89, 0x50, 0x4E, 0x47]],
+    gif: [[0x47, 0x49, 0x46, 0x38]],
+    webp: [[0x52, 0x49, 0x46, 0x46]],
+};
+
+function validateImageMagicBytes(buffer) {
+    const header = buffer.slice(0, 12);
+    for (const [fmt, sigs] of Object.entries(IMAGE_MAGIC_BYTES)) {
+        for (const sig of sigs) {
+            if (sig.every((b, i) => header[i] === b)) return fmt;
+        }
+    }
+    // WEBP: RIFF header at 0-3, WEBP at 8-11
+    if (header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x46 &&
+        header[8] === 0x57 && header[9] === 0x45 && header[10] === 0x42 && header[11] === 0x50) {
+        return 'webp';
+    }
+    return null;
+}
 
 // If the AI identified a highly trusted source, boost credibility score by 50% (capped at 100)
 // and inject a green flag noting the source.
@@ -150,22 +234,33 @@ app.get('/api/face/known', async (req, res) => {
 
 // ── Standalone ZeroGPT-style AI text detector ──
 // Does NOT require GROQ_API_KEY. Uses local statistical analysis only.
-app.post('/api/detect/text', (req, res) => {
-    const { text } = req.body;
+app.post('/api/detect/text', detectTextLimiter, (req, res) => {
+    let { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'Text is required' });
+    text = sanitize(text);
     if (!text) return res.status(400).json({ error: 'Text is required' });
     const result = detectText(text);
     res.json(result);
 });
 
+const MAX_TEXT_LENGTH = 15000;
+
+function sanitize(str) {
+    return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/<[^>]*>/g, '').trim();
+}
+
 app.post('/api/analyze/text', async (req, res) => {
     try {
-        const { text } = req.body;
+        let { text } = req.body;
         if (!text) return res.status(400).json({ error: 'Text is required' });
+        text = sanitize(text);
+        if (!text) return res.status(400).json({ error: 'Text is required' });
+        if (text.length > MAX_TEXT_LENGTH) return res.status(400).json({ error: `Text exceeds ${MAX_TEXT_LENGTH} character limit` });
         
         const result = await analyzeContent(text);
         res.json(applyTrustedBoost(result));
     } catch (error) {
-        console.error('Error analyzing text:', error);
+        logger.error('Error analyzing text:', error);
         if (error?.status === 429) {
             res.status(429).json({ error: 'API rate limit reached. Please wait a minute and try again.' });
         } else {
@@ -176,14 +271,17 @@ app.post('/api/analyze/text', async (req, res) => {
 
 app.post('/api/analyze/url', async (req, res) => {
     try {
-        const { url } = req.body;
+        let { url } = req.body;
         if (!url) return res.status(400).json({ error: 'URL is required' });
+        url = sanitize(url);
+        if (!url) return res.status(400).json({ error: 'URL is required' });
+        if (url.length > 5000) return res.status(400).json({ error: 'URL exceeds 5000 character limit' });
 
         const text = await scrapeUrl(url);
         const result = await analyzeContent(text);
         res.json(applyTrustedBoost(result));
     } catch (error) {
-        console.error('Error analyzing URL:', error);
+        logger.error('Error analyzing URL:', error);
         if (error?.status === 429) {
             res.status(429).json({ error: 'API rate limit reached. Please wait a minute and try again.' });
         } else {
@@ -220,7 +318,7 @@ function checkAiFilename(originalName) {
     return null;
 }
 
-app.post('/api/analyze/image', upload.single('image'), async (req, res) => {
+app.post('/api/analyze/image', imageLimiter, upload.single('image'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'Image is required' });
     
     const imagePath = req.file.path;
@@ -228,13 +326,21 @@ app.post('/api/analyze/image', upload.single('image'), async (req, res) => {
     
     try {
         const imageData = await fs.promises.readFile(imagePath);
+
+        // Validate magic bytes — client-supplied MIME type is untrustworthy
+        const detected = validateImageMagicBytes(imageData);
+        if (!detected) {
+            await fs.promises.unlink(imagePath).catch(() => {});
+            return res.status(400).json({ error: 'Invalid or corrupted image file. Only JPEG, PNG, WEBP, and GIF are accepted.' });
+        }
+
         const base64 = imageData.toString('base64');
         const mimeType = req.file.mimetype;
 
         // Check if the filename itself reveals AI origin
         const aiKeywordMatch = checkAiFilename(originalName);
         if (aiKeywordMatch) {
-            console.log(`⚠️ AI keyword detected in filename: "${originalName}" (matched: "${aiKeywordMatch}") — returning immediate fake verdict.`);
+            logger.warn(`AI keyword detected in filename: "${originalName}" (matched: "${aiKeywordMatch}") — returning immediate fake verdict.`);
             res.json({
                 credibility_score: 5,
                 verdict: 'Confirmed Fake / AI-Generated',
@@ -260,18 +366,18 @@ app.post('/api/analyze/image', upload.single('image'), async (req, res) => {
         
         res.json(applyTrustedBoost(result));
     } catch (error) {
-        console.error('Error analyzing image:', error);
+        logger.error('Error analyzing image:', error);
         if (error?.status === 429) {
             res.status(429).json({ error: 'API rate limit reached. Please wait a moment and try again.' });
         } else {
-            res.status(500).json({ error: error.message || 'Failed to analyze image' });
+            res.status(500).json({ error: 'Failed to analyze image' });
         }
     } finally {
         // Clean up temp file safely
         try {
             await fs.promises.unlink(imagePath);
         } catch (unlinkError) {
-            console.error('Error deleting temp image file:', unlinkError);
+            logger.error('Error deleting temp image file:', unlinkError);
         }
     }
 });
@@ -294,7 +400,7 @@ app.use((err, req, res, next) => {
         }
         return res.status(400).json({ error: `Upload error: ${err.message}` });
     } else if (err) {
-        console.error('Global Error:', err);
+        logger.error('Global Error:', err);
         return res.status(500).json({ error: 'An unexpected server error occurred.' });
     }
     next();
@@ -303,19 +409,23 @@ app.use((err, req, res, next) => {
 function startServer(port) {
     const server = app.listen(port, () => {
         const actualPort = server.address().port;
-        console.log(`Server running on http://localhost:${actualPort}`);
+        logger.info(`Server running on http://localhost:${actualPort}`);
     });
 
     server.on('error', async (err) => {
         if (err.code === 'EADDRINUSE') {
-            console.log(`Port ${port} is busy. Killing the old process and retrying...`);
-            const { exec } = await import('child_process');
-            // Find and kill whatever is using the port
-            exec(`for /f "tokens=5" %a in ('netstat -aon ^| findstr :${port} ^| findstr LISTENING') do taskkill /F /PID %a`, { shell: 'cmd.exe' }, (error) => {
-                setTimeout(() => startServer(port), 1500);
-            });
+            logger.warn(`Port ${port} is busy. Killing the old process and retrying...`);
+            const portNum = parseInt(port, 10);
+            if (portNum > 0 && portNum <= 65535) {
+                const { exec } = await import('child_process');
+                exec(`for /f "tokens=5" %a in ('netstat -aon ^| findstr :${portNum} ^| findstr LISTENING') do taskkill /F /PID %a`, { shell: 'cmd.exe' }, () => {
+                    setTimeout(() => startServer(port), 1500);
+                });
+            } else {
+                setTimeout(() => startServer(port), 3000);
+            }
         } else {
-            console.error('Server error:', err);
+            logger.error('Server error:', err);
         }
     });
 }
@@ -324,64 +434,48 @@ function startServer(port) {
 // If any model file is missing, automatically run auto_train.py in the background.
 // The server boots immediately and starts serving — ML endpoints gracefully degrade
 // until training finishes and the Python APIs reload the new model files.
+// Skipped in test mode to keep tests fast and avoid hanging on missing data files.
 let textApiProcess = null, imageApiProcess = null, faceApiProcess = null;
 
-const MODEL_FILES = [
-    { path: path.join(__dirname, 'fake_news_model.pkl'),      label: 'Text fake-news model' },
-    { path: path.join(__dirname, 'fake_news_vectorizer.pkl'), label: 'Text vectorizer' },
-    { path: path.join(__dirname, 'animal_model.onnx'),        label: 'Image classifier model' },
-];
+if (process.env.NODE_ENV !== 'test') {
+    const MODEL_FILES = [
+        { path: path.join(__dirname, 'fake_news_model.pkl'),      label: 'Text fake-news model' },
+        { path: path.join(__dirname, 'fake_news_vectorizer.pkl'), label: 'Text vectorizer' },
+        { path: path.join(__dirname, 'animal_model.onnx'),        label: 'Image classifier model' },
+    ];
 
-const missingModels = MODEL_FILES.filter(m => !fs.existsSync(m.path));
+    const missingModels = MODEL_FILES.filter(m => !fs.existsSync(m.path));
 
-if (missingModels.length > 0) {
-    console.log('\n🤖 Auto-Trainer: The following model files are missing:');
-    missingModels.forEach(m => console.log(`   • ${m.label}  (${path.basename(m.path)})`));
-    console.log('🤖 Auto-Trainer: Starting auto_train.py in the background...');
-    console.log('🤖 Auto-Trainer: The server is live — ML features will activate once training completes.\n');
-
-    const trainer = spawn('python', ['auto_train.py'], {
-        cwd: __dirname,
-        stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    trainer.stdout.on('data', (data) => {
-        data.toString().split('\n').filter(Boolean).forEach(line =>
-            console.log(`[Auto-Trainer] ${line}`)
-        );
-    });
-    trainer.stderr.on('data', (data) => {
-        data.toString().split('\n').filter(Boolean).forEach(line =>
-            console.error(`[Auto-Trainer ERR] ${line}`)
-        );
-    });
-    trainer.on('close', (code) => {
-        if (code === 0) {
-            console.log('\n✅ Auto-Trainer: Training complete. Restarting Python APIs...');
-            try { textApiProcess.kill(); } catch {}
-            try { imageApiProcess.kill(); } catch {}
-            try { faceApiProcess.kill(); } catch {}
-            textApiProcess = spawnPythonApi('ML Text API', 'python_api.py', 8000);
-            imageApiProcess = spawnPythonApi('ML Image API', 'animal_api.py', 8001);
-            faceApiProcess = spawnPythonApi('Face API', 'face_api.py', 8002);
-        } else {
-            console.error(`\n❌ Auto-Trainer: No training data found. ML features will remain offline.`);
-            console.error(`   Add the required data files to the project root and restart.`);
-        }
-    });
-} else {
-    console.log('✅ Auto-Trainer: All model files present — no training needed.');
+    if (missingModels.length > 0) {
+        const trainer = spawn('python', ['auto_train.py'], {
+            cwd: __dirname,
+            stdio: 'ignore',
+        });
+        trainer.on('close', (code) => {
+            if (code === 0) {
+                try { textApiProcess.kill(); } catch {}
+                try { imageApiProcess.kill(); } catch {}
+                try { faceApiProcess.kill(); } catch {}
+                textApiProcess = spawnPythonApi('ML Text API', 'python_api.py', 8000);
+                imageApiProcess = spawnPythonApi('ML Image API', 'animal_api.py', 8001);
+                faceApiProcess = spawnPythonApi('Face API', 'face_api.py', 8002);
+            }
+        });
+    }
 }
 
-// --- Start Python ML APIs Automatically ---
+// --- Start Python ML APIs Automatically (quiet mode) ---
 // Skip spawning in test mode to keep integration tests fast
 function spawnPythonApi(name, script, port) {
     const proc = spawn('python', [script], { cwd: __dirname });
-    proc.stdout.on('data', (data) => console.log(`[${name}] ${data.toString().trim()}`));
-    proc.stderr.on('data', (data) => console.error(`[${name} Error] ${data.toString().trim()}`));
+    proc.stdout.on('data', () => {}); // suppress
+    proc.stderr.on('data', (data) => {
+        // Only log actual errors, not startup info
+        const s = data.toString().trim();
+        if (/error|traceback|exception|fail|warn/i.test(s)) logger.error(`[${name}] ${s}`);
+    });
     proc.on('exit', (code) => {
         if (code !== 0 && code !== null) {
-            console.error(`[${name}] Process exited code ${code}, restarting in 3s...`);
             setTimeout(() => {
                 const newProc = spawnPythonApi(name, script, port);
                 if (name === 'ML Text API') textApiProcess = newProc;
@@ -398,7 +492,7 @@ if (process.env.NODE_ENV !== 'test') {
     imageApiProcess = spawnPythonApi('ML Image API', 'animal_api.py', 8001);
     faceApiProcess = spawnPythonApi('Face API', 'face_api.py', 8002);
 } else {
-    console.log('[Test mode] Skipping Python API spawning.');
+    logger.info('[Test mode] Skipping Python API spawning.');
 }
 
 const API_HEALTH_URLS = [
@@ -412,16 +506,10 @@ async function checkApiHealth(retries = 3, delay = 5000) {
         for (let attempt = 1; attempt <= retries; attempt++) {
             try {
                 const res = await fetch(api.url, { signal: AbortSignal.timeout(5000) });
-                if (res.ok) {
-                    const data = await res.json();
-                    console.log(`[Health] ${api.name} API OK: ${JSON.stringify(data)}`);
-                    break;
-                }
+                if (res.ok) break;
             } catch {
                 if (attempt < retries) {
                     await new Promise(r => setTimeout(r, delay));
-                } else {
-                    console.warn(`[Health] ${api.name} API unreachable after ${retries} retries — endpoints will degrade gracefully`);
                 }
             }
         }
