@@ -7,6 +7,7 @@ import { detectJerseyMismatch, findTeamInText, PLAYER_CLUBS, getCelebrityContext
 import { searchWeb } from './scraper.js';
 import { withRetry } from './retry.js';
 import { analyzeText } from './textDetector.js';
+import { logger } from './logger.js';
 dotenv.config();
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -110,7 +111,7 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
             model: 'llama-3.3-70b-versatile',
             response_format: { type: 'json_object' },
             temperature: 0.1,
-        }), { onRetry: (err, attempt) => console.warn(`Groq text analysis retry ${attempt}: ${err.message}`) });
+        }), { onRetry: (err, attempt) => logger.warn(`Groq text analysis retry ${attempt}: ${err.message}`) });
 
         const responseText = completion.choices[0]?.message?.content || '{}';
         const result = JSON.parse(responseText);
@@ -141,7 +142,7 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
                 }
             }
         } catch (e) {
-            console.log('Local Python ML API not reachable or timed out, skipping ML score...');
+            logger.info('Local Python ML API not reachable or timed out, skipping ML score...');
         }
 
         // ZeroGPT-style statistical AI text detector post-processing
@@ -164,7 +165,7 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
 
         return result;
     } catch (error) {
-        console.error('Groq text analysis error:', error);
+        logger.error('Groq text analysis error:', error);
         throw error;
     }
 }
@@ -173,34 +174,57 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
 const VISION_MODELS = [
     'meta-llama/llama-4-scout-17b-16e-instruct',
     'meta-llama/llama-4-maverick-17b-128e-instruct',
-    'qwen/qwen3.6-27b',
 ];
 
 async function groqVisionRequest(messages, maxTokens = 500) {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error('GROQ_API_KEY is not configured');
+
     let lastError;
     for (const model of VISION_MODELS) {
         try {
-            console.log(`Trying vision model: ${model}`);
-            const completion = await Promise.race([
-                groq.chat.completions.create({
-                    messages,
+            logger.info(`Trying vision model via direct API: ${model}`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 45000);
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
                     model,
+                    messages,
                     temperature: 0.1,
                     max_tokens: maxTokens,
                 }),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Groq Timeout')), 45000))
-            ]);
-            console.log(`Vision model ${model} succeeded.`);
+                signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+
+            if (!res.ok) {
+                const errBody = await res.text().catch(() => '');
+                const msg = `${res.status}: ${errBody.slice(0, 200)}`;
+                const isNoVision = errBody.includes('does not support image input') || errBody.includes('does not support images');
+                const isOverCapacity = res.status === 503 || errBody.includes('over capacity');
+                const isUnavailable = res.status === 404 || errBody.includes('unavailable');
+                if (isOverCapacity || isUnavailable || isNoVision) {
+                    logger.warn(`Model ${model} unavailable (${res.status}): ${msg.slice(0, 120)} — trying next...`);
+                    lastError = new Error(msg);
+                    continue;
+                }
+                throw new Error(`Groq API error: ${msg}`);
+            }
+
+            const completion = await res.json();
+            logger.info(`Vision model ${model} succeeded.`);
             return completion;
         } catch (err) {
-            const msg = err?.error?.message || err?.message || '';
-            const isOverCapacity = msg.includes('over capacity') || msg.includes('503') || (err?.status === 503);
-            const isUnavailable = msg.includes('unavailable') || msg.includes('404') || (err?.status === 404);
-            const isNoVision = msg.includes('does not support image input') || msg.includes('does not support images') || msg.includes('image input');
-            const isDecommissioned = msg.includes('decommissioned') || msg.includes('no longer supported');
-            const isTransient = /timeout|fetch failed|ECONNRESET|ETIMEDOUT|network/i.test(msg);
-            if (isOverCapacity || isUnavailable || isTransient || isNoVision || isDecommissioned) {
-                console.warn(`Model ${model} unavailable (${err?.status || 'err'}): ${msg.slice(0, 120)} — trying next model...`);
+            const msg = err?.message || '';
+            const isTimeout = msg.includes('abort') || msg.includes('timeout');
+            const isNetwork = /fetch failed|ECONNRESET|ETIMEDOUT|network/i.test(msg);
+            if (isTimeout || isNetwork) {
+                logger.warn(`Model ${model} network error: ${msg.slice(0, 120)} — trying next...`);
                 lastError = err;
                 continue;
             }
@@ -236,7 +260,7 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
         // Face API (Python microservice)
         (async () => {
             try {
-                console.log('[FaceID] Sending image to local Python Face API...');
+                logger.info('[FaceID] Sending image to local Python Face API...');
                 const buffer = Buffer.from(imageBase64, 'base64');
                 const form = new FormData();
                 form.append('file', buffer, { filename: 'upload.jpg', contentType: mimeType });
@@ -247,15 +271,15 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
                 if (faceRes.ok) {
                     const faceData = await faceRes.json();
                     if (faceData && faceData.player) {
-                        console.log(`[FaceID] MATCH FOUND! The person is exactly: ${faceData.player}`);
+                        logger.info(`[FaceID] MATCH FOUND! The person is exactly: ${faceData.player}`);
                         return faceData.player;
                     }
-                    console.log(`[FaceID] No match found in known_faces dataset: ${faceData.reason || 'None'}`);
+                    logger.info(`[FaceID] No match found in known_faces dataset: ${faceData.reason || 'None'}`);
                 } else {
-                    console.warn('[FaceID] API returned error:', faceRes.status);
+                    logger.warn('[FaceID] API returned error:', faceRes.status);
                 }
             } catch (e) {
-                console.warn('[FaceID] Failed to call Python Face API:', e.message);
+                logger.warn('[FaceID] Failed to call Python Face API:', e.message);
             }
             return null;
         })(),
@@ -275,14 +299,14 @@ export async function analyzeImage(imageBase64, mimeType, userContext = '', orig
                 });
                 if (res.ok) return await res.json();
             } catch (e) {
-                console.warn('[Nonescape] AI detection API not reachable:', e.message);
+                logger.warn('[Nonescape] AI detection API not reachable:', e.message);
             }
             return null;
         })(),
 
         // Step 1: Rich visual description
         (async () => {
-            console.log('Starting Groq step 1 (Description)...');
+            logger.info('Starting Groq step 1 (Description)...');
             const descStartTime = Date.now();
             try {
                 const userContextNote = userContext
@@ -321,10 +345,10 @@ Be very specific and honest about uncertainty.`
                     }
                 ], 250);
                 const desc = descCompletion.choices[0]?.message?.content || '';
-                console.log(`Groq Description completed in ${Date.now() - descStartTime}ms. Output length: ${desc.length}`);
+                logger.info(`Groq Description completed in ${Date.now() - descStartTime}ms. Output length: ${desc.length}`);
                 return desc;
             } catch (err) {
-                console.error(`Groq Description failed after ${Date.now() - descStartTime}ms:`, err.message);
+                logger.error(`Groq Description failed after ${Date.now() - descStartTime}ms:`, err.message);
                 return '';
             }
         })(),
@@ -387,7 +411,7 @@ Be very specific and honest about uncertainty.`
         const teamName = findTeamInText(mismatchText);
         if (teamName && !Object.keys(PLAYER_CLUBS).some(p => mismatchText.toLowerCase().includes(p))) {
             unverifiableIdentity = teamName;
-            console.log(`⚠️ Unverifiable identity: jersey shows ${teamName} but no player name found in text`);
+            logger.warn(`Unverifiable identity: jersey shows ${teamName} but no player name found in text`);
         }
     }
 
@@ -402,17 +426,17 @@ Be very specific and honest about uncertainty.`
     // ── STEP 2.5: Rule-based heuristics ──
     const physiqueWarning = detectExtremePhysiqueCasualSetting(imageDescription);
     if (physiqueWarning) {
-        console.log(`⚠️ Physique heuristic triggered: ${physiqueWarning}`);
+        logger.warn(`Physique heuristic triggered: ${physiqueWarning}`);
     }
 
     const portraitWarning = detectAiPortrait(imageDescription);
     if (portraitWarning) {
-        console.log(`⚠️ Portrait heuristic triggered: ${portraitWarning}`);
+        logger.warn(`Portrait heuristic triggered: ${portraitWarning}`);
     }
 
     const filenameWarning = detectAiFilename(originalName);
     if (filenameWarning) {
-        console.log(`⚠️ Filename heuristic triggered: ${filenameWarning}`);
+        logger.warn(`Filename heuristic triggered: ${filenameWarning}`);
     }
 
     const anyHeuristicWarning = physiqueWarning || portraitWarning || filenameWarning;
@@ -568,7 +592,7 @@ Be very specific and honest about uncertainty.`
     `;
 
     try {
-        console.log('Starting Groq step 3 (Final Analysis)...');
+        logger.info('Starting Groq step 3 (Final Analysis)...');
         const analysisStartTime = Date.now();
         const completion = await groqVisionRequest([
             {
@@ -579,7 +603,7 @@ Be very specific and honest about uncertainty.`
                 ]
             }
         ], 1024);
-        console.log(`Groq Analysis completed in ${Date.now() - analysisStartTime}ms.`);
+        logger.info(`Groq Analysis completed in ${Date.now() - analysisStartTime}ms.`);
 
         let responseText = completion.choices[0]?.message?.content || '{}';
         // Clean markdown blocks if vision model ignores json_object format
@@ -594,7 +618,7 @@ Be very specific and honest about uncertainty.`
             const combinedLlmText = `${llmResult.summary || ''} ${llmResult.verdict || ''} ${(llmResult.red_flags || []).join(' ')} ${userContext || ''} ${faceIdOverride || ''}`;
             const postCheckMismatch = detectJerseyMismatch(combinedLlmText);
             if (postCheckMismatch) {
-                console.log(`[Sports Check] Post-LLM check caught mismatch: ${postCheckMismatch.player} + ${postCheckMismatch.jerseyTeam}`);
+                logger.info(`[Sports Check] Post-LLM check caught mismatch: ${postCheckMismatch.player} + ${postCheckMismatch.jerseyTeam}`);
                 jerseyMismatch = postCheckMismatch;
             }
         }
@@ -611,7 +635,7 @@ Be very specific and honest about uncertainty.`
                 // Reduce score proportionally: higher AI probability = bigger penalty
                 const penalty = Math.round(aiOverride.ai_probability * 0.6);
                 const adjustedScore = Math.max(5, originalScore - penalty);
-                console.log(`Soft AI warning: original score ${originalScore} → adjusted ${adjustedScore} (Gemini: ${aiOverride.ai_probability}%)`);
+                logger.info(`Soft AI warning: original score ${originalScore} → adjusted ${adjustedScore} (Gemini: ${aiOverride.ai_probability}%)`);
                 return {
                     ...llmResult,
                     credibility_score: adjustedScore,
@@ -664,7 +688,7 @@ Be very specific and honest about uncertainty.`
 
         if (jerseyMismatch) {
             const score = 8;
-            console.log(`⛔ Jersey mismatch hard cap: ${jerseyMismatch.player} in ${jerseyMismatch.jerseyTeam} jersey — score → ${score}`);
+            logger.warn(`Jersey mismatch hard cap: ${jerseyMismatch.player} in ${jerseyMismatch.jerseyTeam} jersey — score → ${score}`);
             return {
                 ...llmResult,
                 credibility_score: score,
@@ -690,7 +714,7 @@ Be very specific and honest about uncertainty.`
             const originalScore = llmResult.credibility_score;
             const penalty = Math.min(40, Math.round(originalScore * 0.55));
             const adjustedScore = Math.max(5, originalScore - penalty);
-            console.log(`⚠️ Portrait heuristic penalty: score ${originalScore} → ${adjustedScore} (penalty: ${penalty})`);
+            logger.warn(`Portrait heuristic penalty: score ${originalScore} → ${adjustedScore} (penalty: ${penalty})`);
             return {
                 ...llmResult,
                 credibility_score: adjustedScore,
@@ -709,7 +733,7 @@ Be very specific and honest about uncertainty.`
 
         if (physiqueWarning && (llmResult.credibility_score ?? 100) > 35) {
             const cappedScore = 20;
-            console.log(`⚠️ Physique heuristic cap applied: score ${llmResult.credibility_score} → ${cappedScore}`);
+            logger.warn(`Physique heuristic cap applied: score ${llmResult.credibility_score} → ${cappedScore}`);
             return {
                 ...llmResult,
                 credibility_score: cappedScore,
@@ -726,7 +750,7 @@ Be very specific and honest about uncertainty.`
 
         if (filenameWarning && (llmResult.credibility_score ?? 100) > 10) {
             const cappedScore = 5;
-            console.log(`⚠️ Filename heuristic cap applied: score ${llmResult.credibility_score} → ${cappedScore}`);
+            logger.warn(`Filename heuristic cap applied: score ${llmResult.credibility_score} → ${cappedScore}`);
             return {
                 ...llmResult,
                 credibility_score: cappedScore,
@@ -742,7 +766,7 @@ Be very specific and honest about uncertainty.`
 
         if (unverifiableIdentity && (llmResult.credibility_score ?? 100) > 45) {
             const cappedScore = 35;
-            console.log(`⚠️ Unverifiable identity cap: jersey shows ${unverifiableIdentity} but no player name — score ${llmResult.credibility_score} → ${cappedScore}`);
+            logger.warn(`Unverifiable identity cap: jersey shows ${unverifiableIdentity} but no player name — score ${llmResult.credibility_score} → ${cappedScore}`);
             return {
                 ...llmResult,
                 credibility_score: cappedScore,
@@ -763,7 +787,7 @@ Be very specific and honest about uncertainty.`
         // to avoid 100% "definitely real" for unverifiable sports images.
         if (sportsWarning && (llmResult.credibility_score ?? 100) > 70) {
             const cappedScore = 55;
-            console.log(`⚠️ Sports context suspicion cap: sports content without identifiable team/player — score ${llmResult.credibility_score} → ${cappedScore}`);
+            logger.warn(`Sports context suspicion cap: sports content without identifiable team/player — score ${llmResult.credibility_score} → ${cappedScore}`);
             return {
                 ...llmResult,
                 credibility_score: cappedScore,
@@ -780,7 +804,7 @@ Be very specific and honest about uncertainty.`
         if (nonescapeAiProb !== undefined && nonescapeAiProb > 0.65 && (llmResult.credibility_score ?? 100) > 40) {
             const cappedScore = 30;
             const pct = Math.round(nonescapeAiProb * 100);
-            console.log(`⚠️ Nonescape AI cap: ${pct}% AI prob — score ${llmResult.credibility_score} → ${cappedScore}`);
+            logger.warn(`Nonescape AI cap: ${pct}% AI prob — score ${llmResult.credibility_score} → ${cappedScore}`);
             return {
                 ...llmResult,
                 credibility_score: cappedScore,
@@ -841,19 +865,19 @@ Be very specific and honest about uncertainty.`
                 }
             }
         } catch (e) {
-            console.log('Image classifier API not reachable, skipping...');
+            logger.warn('Image classifier API not reachable, skipping...');
         }
 
         return llmResult;
     } catch (error) {
         const detail = error?.error?.message || error?.message || 'Unknown error';
-        console.error('Groq image analysis error:', detail, error);
+        logger.error('Groq image analysis error:', detail, error);
 
         // ── FALLBACK: When Groq vision is unavailable, return a result from
         // Gemini + heuristics + local models instead of crashing.
         const isVisionDown = /vision model|does not support image|unavailable/i.test(detail);
         if (isVisionDown) {
-            console.warn('Groq vision unavailable — returning degraded result from Gemini + heuristics.');
+            logger.warn('Groq vision unavailable — returning degraded result from Gemini + heuristics.');
 
             // Build fallback result from available data
             const fallback = {

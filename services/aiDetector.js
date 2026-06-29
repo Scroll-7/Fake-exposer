@@ -4,6 +4,7 @@
  * Returns { aiProbability: 0-100, isAI: boolean, reasoning: string, artifacts: string[] }
  */
 import { withRetry } from './retry.js';
+import { logger } from './logger.js';
 
 // Rotate through available API keys
 let keyIndex = 0;
@@ -18,7 +19,7 @@ function getNextGeminiKey() {
 export async function detectAiImage(imageBase64, mimeType) {
     const apiKey = getNextGeminiKey();
     if (!apiKey) {
-        console.warn('No GEMINI_API_KEYS set — skipping dedicated AI detection step.');
+        logger.warn('No GEMINI_API_KEYS set — skipping dedicated AI detection step.');
         return null;
     }
 
@@ -159,7 +160,7 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
         let response = null;
         let usedModel = null;
         for (const model of GEMINI_MODELS) {
-            console.log(`Sending image to Gemini model: ${model} (key index ${keyIndex - 1})...`);
+            logger.info(`Sending image to Gemini model: ${model} (key index ${keyIndex - 1})...`);
             const startTime = Date.now();
             const r = await withRetry(() => fetch(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -181,12 +182,12 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
                     }),
                     signal: AbortSignal.timeout(45000)
                 }
-            ), { maxRetries: 2, onRetry: (err, a) => console.warn(`Gemini ${model} retry ${a}: ${err.message}`) });
-            console.log(`Gemini ${model} fetch completed in ${Date.now() - startTime}ms, status=${r.status}`);
+            ), { maxRetries: 2, onRetry: (err, a) => logger.warn(`Gemini ${model} retry ${a}: ${err.message}`) });
+            logger.info(`Gemini ${model} fetch completed in ${Date.now() - startTime}ms, status=${r.status}`);
 
             if (r.status === 503 || r.status === 429) {
                 const errBody = await r.text();
-                console.warn(`Gemini model ${model} unavailable (${r.status}): ${errBody.slice(0, 150)} — trying next...`);
+                logger.warn(`Gemini model ${model} unavailable (${r.status}): ${errBody.slice(0, 150)} — trying next...`);
                 continue;
             }
 
@@ -196,13 +197,13 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
         }
 
         if (!response) {
-            console.warn('All Gemini models returned 503/429 — skipping AI detection.');
+            logger.warn('All Gemini models returned 503/429 — skipping AI detection.');
             return null;
         }
 
         if (!response.ok) {
             const errBody = await response.text();
-            console.warn(`Gemini AI detection returned ${response.status}: ${errBody.slice(0, 200)}`);
+            logger.warn(`Gemini AI detection returned ${response.status}: ${errBody.slice(0, 200)}`);
             return null;
         }
 
@@ -211,7 +212,7 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
         raw = raw.replace(/```json/g, '').replace(/```/g, '').trim();
 
         const parsed = JSON.parse(raw);
-        console.log(`Gemini AI Detection [${usedModel}]: ${parsed.ai_probability}% AI probability — ${parsed.verdict} [${parsed.image_category}] confidence=${parsed.confidence}`);
+        logger.info(`Gemini AI Detection [${usedModel}]: ${parsed.ai_probability}% AI probability — ${parsed.verdict} [${parsed.image_category}] confidence=${parsed.confidence}`);
         return {
             aiProbability: parsed.ai_probability,
             isAI: parsed.ai_probability >= 45,
@@ -222,7 +223,7 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
             reasoning: parsed.reasoning || ''
         };
     } catch (err) {
-        console.warn('Gemini AI detection failed:', err.message);
+        logger.warn('Gemini AI detection failed:', err.message);
         return null;
     }
 }

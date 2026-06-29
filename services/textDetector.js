@@ -39,7 +39,7 @@ const WORD_FREQ = {
   need: 2.27, find: 2.26, end: 2.25, another: 2.24, always: 2.23, good: 2.22,
   get: 2.21, make: 2.20, look: 2.19, head: 2.18, use: 2.17, since: 2.16,
   group: 2.15, point: 2.14, child: 2.13, city: 2.12, become: 2.11, public: 2.10,
-  different: 2.09, include: 2.08, important: 2.07, play: 2.06, present: 2.05,
+  different: 2.09, include: 2.08, play: 2.06, present: 2.05,
   follow: 2.04, both: 2.03, house: 2.02, general: 2.01, again: 2.00,
   // Additional common words with lower frequencies
   important: 1.99, research: 1.98, development: 1.97, technology: 1.96,
@@ -49,20 +49,20 @@ const WORD_FREQ = {
   rather: 1.81, according: 1.80, analysis: 1.79, approach: 1.78, area: 1.77,
   available: 1.76, benefit: 1.75, cause: 1.74, change: 1.73, condition: 1.72,
   consider: 1.71, create: 1.70, data: 1.69, decision: 1.68, describe: 1.67,
-  effect: 1.66, environment: 1.65, establish: 1.64, evidence: 1.63, experience: 1.62,
+  effect: 1.66, establish: 1.64, evidence: 1.63, experience: 1.62,
   factor: 1.61, focus: 1.60, force: 1.59, function: 1.58, growth: 1.57,
   identify: 1.56, impact: 1.55, increase: 1.54, issue: 1.53, language: 1.52,
   level: 1.51, maintain: 1.50, measure: 1.49, model: 1.48, movement: 1.47,
   necessary: 1.46, occur: 1.45, operation: 1.44, organization: 1.43, period: 1.42,
-  policy: 1.41, population: 1.40, position: 1.39, potential: 1.38, practice: 1.37,
+  policy: 1.41, population: 1.40, position: 1.39, potential: 1.38,
   previous: 1.36, primary: 1.35, produce: 1.34, professor: 1.33, program: 1.32,
   project: 1.31, property: 1.30, propose: 1.29, range: 1.28, rate: 1.27,
   recent: 1.26, reduce: 1.25, region: 1.24, relate: 1.23, relationship: 1.22,
   resource: 1.21, response: 1.20, role: 1.19, section: 1.18, security: 1.17,
-  service: 1.16, significant: 1.15, similar: 1.14, source: 1.13, standard: 1.12,
+  service: 1.16, similar: 1.14, source: 1.13, standard: 1.12,
   strategy: 1.11, structure: 1.10, study: 1.09, subject: 1.08, success: 1.07,
-  suggest: 1.06, theory: 1.05, traditional: 1.04, training: 1.03, value: 1.02,
-  various: 1.01, activity: 1.00, address: 0.99, agreement: 0.98, allow: 0.97,
+  suggest: 1.06, theory: 1.05,   traditional: 1.04, training: 1.03, value: 1.02,
+  activity: 1.00, address: 0.99, agreement: 0.98, allow: 0.97,
   application: 0.96, article: 0.95, attention: 0.94, authority: 0.93, basis: 0.92,
   category: 0.91, challenge: 0.90, claim: 0.89, collection: 0.88, combination: 0.87,
   communication: 0.86, comparison: 0.85, complex: 0.84, component: 0.83,
@@ -506,6 +506,7 @@ export function analyzeText(text) {
   // Ensemble: weighted combination (ZeroGPT-style multi-stage)
   // Formality and punctuation are strong signals; burstiness weak for short texts
   const burstWeight = sentences.length < 4 ? 0.10 : 0.20;
+  const totalWeight = 0.15 + burstWeight + 0.15 + 0.15 + 0.15 + 0.25 + 0.10;
   const overallScore = Math.round(shortTextPenalty * (
     perplexity * 0.15 +
     burstiness * burstWeight +
@@ -514,7 +515,7 @@ export function analyzeText(text) {
     sentenceStarts * 0.15 +
     formality * 0.25 +
     punctuation * 0.10
-  ) / (0.15 + burstWeight + 0.15 + 0.15 + 0.15 + 0.20 + 0.10));
+  ) / totalWeight);
 
   const aiCount = sentencesHighlight.filter(s => s.isAi).length;
   const aiPercentage = sentencesHighlight.length > 0

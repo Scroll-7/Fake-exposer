@@ -171,22 +171,50 @@ document.addEventListener('DOMContentLoaded', () => {
     const analyzeTextBtn = document.getElementById('analyze-text-btn');
     const analyzeUrlBtn = document.getElementById('analyze-url-btn');
 
-    analyzeTextBtn.addEventListener('click', async () => {
-        const text = document.getElementById('text-input').value;
-        if (!text.trim()) return showToast('Please enter some text.');
-        
-        // Check if the user pasted a single URL instead of text
-        const urlPattern = /^(https?:\/\/[^\s]+)$/;
-        if (urlPattern.test(text.trim())) {
-            return showToast('It looks like you pasted a link! Please use the "URL" tab instead.');
+    const textInput = document.getElementById('text-input');
+    const urlInput = document.getElementById('url-input');
+
+    // Enter to submit, Shift+Enter for newline in textarea
+    textInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            analyzeTextBtn.click();
         }
+    });
+
+    urlInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            analyzeUrlBtn.click();
+        }
+    });
+
+    // Auto-detect URL paste — switch to URL tab
+    textInput.addEventListener('paste', () => {
+        setTimeout(() => {
+            const val = textInput.value.trim();
+            if (/^https?:\/\/\S+$/.test(val)) {
+                tabBtns.forEach(b => b.classList.remove('active'));
+                tabPanes.forEach(p => p.classList.remove('active'));
+                document.querySelector('[data-tab="url"]').classList.add('active');
+                document.getElementById('tab-url').classList.add('active');
+                urlInput.value = val;
+                textInput.value = '';
+                showToast('URL detected — switched to URL tab');
+            }
+        }, 50);
+    });
+
+    analyzeTextBtn.addEventListener('click', async () => {
+        const text = textInput.value;
+        if (!text.trim()) return showToast('Please enter some text.');
 
         simulateProgress('Fact-Checking...', ['Searching Web', 'Analyzing Content', 'Final Review'], 2500);
         await performAnalysis('/api/analyze/text', { text }, analyzeTextBtn);
     });
 
     analyzeUrlBtn.addEventListener('click', async () => {
-        const url = document.getElementById('url-input').value;
+        const url = urlInput.value;
         if (!url.trim() || !url.startsWith('http')) return showToast('Please enter a valid URL.');
         simulateProgress('Analyzing URL...', ['Fetching Page', 'Extracting Text', 'Analyzing Content', 'Final Review'], 2500);
         await performAnalysis('/api/analyze/url', { url }, analyzeUrlBtn);
@@ -340,7 +368,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // ── Face identified badge ──
         const faceBadge = document.getElementById('face-badge');
         if (data.face_identified) {
-            faceBadge.innerHTML = `<span class="badge-icon">👤</span> ${data.face_identified}`;
+            faceBadge.textContent = '';
+            const icon = document.createElement('span');
+            icon.className = 'badge-icon';
+            icon.textContent = '👤';
+            faceBadge.appendChild(icon);
+            faceBadge.append(' ' + data.face_identified);
             faceBadge.classList.remove('hidden');
         } else {
             faceBadge.classList.add('hidden');
