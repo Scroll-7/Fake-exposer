@@ -9,11 +9,12 @@ import dotenv from 'dotenv';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { spawn } from 'child_process';
+import { exec } from 'child_process';
 
 import { analyzeContent, analyzeImage } from './services/groq.js';
 import { analyzeText as detectText } from './services/textDetector.js';
 import { scrapeUrl } from './services/scraper.js';
+import { AI_FILENAME_KEYWORDS } from './services/heuristics.js';
 import { logger } from './services/logger.js';
 import fs from 'fs';
 
@@ -123,17 +124,19 @@ const detectTextLimiter = rateLimit({
 });
 
 // Configure multer for image uploads with a strict 5MB limit and MIME type filtering
+// GIF and WebP are rejected: Groq vision and Gemini cannot process them, which caused
+// every GIF/WebP upload to silently degrade to an "unable to analyze" result.
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const upload = multer({ 
     dest: UPLOADS_DIR,
     limits: { fileSize: 5 * 1024 * 1024 }, // 5 Megabytes limit
     fileFilter: (req, file, cb) => {
-        // Strict MIME type checking: only allow JPEG, PNG, WEBP, and GIF
-        const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+        // Strict MIME type checking: only allow JPEG and PNG
+        const allowedTypes = ['image/jpeg', 'image/png'];
         if (allowedTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
-            cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Invalid file type. Only JPG, PNG, WEBP, and GIF are allowed.'));
+            cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Invalid file type. Only JPG and PNG are supported.'));
         }
     }
 });
@@ -160,12 +163,10 @@ const cleanupTimer = setInterval(() => {
 }, 3600000);
 cleanupTimer.unref();
 
-// Magic byte signatures for allowed image types
+// Magic byte signatures for allowed image types (JPEG/PNG only — see multer note)
 const IMAGE_MAGIC_BYTES = {
     jpeg: [[0xFF, 0xD8, 0xFF]],
     png: [[0x89, 0x50, 0x4E, 0x47]],
-    gif: [[0x47, 0x49, 0x46, 0x38]],
-    webp: [[0x52, 0x49, 0x46, 0x46]],
 };
 
 function validateImageMagicBytes(buffer) {
@@ -174,11 +175,6 @@ function validateImageMagicBytes(buffer) {
         for (const sig of sigs) {
             if (sig.every((b, i) => header[i] === b)) return fmt;
         }
-    }
-    // WEBP: RIFF header at 0-3, WEBP at 8-11
-    if (header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x46 &&
-        header[8] === 0x57 && header[9] === 0x45 && header[10] === 0x42 && header[11] === 0x50) {
-        return 'webp';
     }
     return null;
 }
@@ -246,6 +242,7 @@ app.post('/api/detect/text', detectTextLimiter, (req, res) => {
 const MAX_TEXT_LENGTH = 15000;
 
 function sanitize(str) {
+    // eslint-disable-next-line no-control-regex -- control-char stripping is intentional
     return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/<[^>]*>/g, '').trim();
 }
 
@@ -276,6 +273,14 @@ app.post('/api/analyze/url', async (req, res) => {
         url = sanitize(url);
         if (!url) return res.status(400).json({ error: 'URL is required' });
         if (url.length > 5000) return res.status(400).json({ error: 'URL exceeds 5000 character limit' });
+        try {
+            const proto = new URL(url).protocol;
+            if (proto !== 'http:' && proto !== 'https:') {
+                return res.status(400).json({ error: 'Only http/https URLs are supported' });
+            }
+        } catch {
+            return res.status(400).json({ error: 'Invalid URL provided' });
+        }
 
         const text = await scrapeUrl(url);
         const result = await analyzeContent(text);
@@ -290,30 +295,14 @@ app.post('/api/analyze/url', async (req, res) => {
     }
 });
 
-// Keywords in filenames that strongly indicate AI-generated images
-const AI_FILENAME_KEYWORDS = [
-    'chatgpt', 'chat_gpt', 'chat-gpt',
-    'gemini', 'google_gemini', 'gemini_image',
-    'midjourney', 'mid_journey', 'mid-journey',
-    'dall-e', 'dalle', 'dall_e',
-    'stable_diffusion', 'stablediffusion', 'stable-diffusion',
-    'ai_generated', 'ai-generated', 'aigenerated', 'ai_image', 'ai-image',
-    'deepfake', 'deep_fake', 'deep-fake',
-    'generated', 'gen_ai', 'genai',
-    'flux', 'firefly', 'adobe_firefly', 'sora', 'ideogram', 'leonardo',
-    'bing_image', 'imagefx', 'image_fx', 'imagen',
-    'gpt', 'openai',
-    'artificial', 'synthetic',
-    'fake', 'edited', 'enhanced', 'photoshop', 'ps_edit',
-    'portrait_ai', 'portraitai', 'remini', 'faceapp',
-];
-
+// Filename keywords that strongly indicate AI-generated images.
+// Shared strict list from heuristics.js — only unambiguous AI tool names.
 function checkAiFilename(originalName) {
     if (!originalName) return null;
     const lower = originalName.toLowerCase().replace(/[^a-z0-9]/g, ' ');
-    const matched = AI_FILENAME_KEYWORDS.filter(kw => lower.includes(kw.replace(/[-_]/g, ' ').replace(/[-_]/g, '')));
-    if (matched.length > 0) {
-        return matched[0]; // return the first matched keyword
+    for (const kw of AI_FILENAME_KEYWORDS) {
+        const normalized = kw.toLowerCase().replace(/[^a-z0-9]/g, ' ');
+        if (lower.includes(normalized)) return kw;
     }
     return null;
 }
@@ -331,11 +320,13 @@ app.post('/api/analyze/image', imageLimiter, upload.single('image'), async (req,
         const detected = validateImageMagicBytes(imageData);
         if (!detected) {
             await fs.promises.unlink(imagePath).catch(() => {});
-            return res.status(400).json({ error: 'Invalid or corrupted image file. Only JPEG, PNG, WEBP, and GIF are accepted.' });
+            return res.status(400).json({ error: 'Invalid or corrupted image file. Only JPEG and PNG are accepted.' });
         }
 
         const base64 = imageData.toString('base64');
-        const mimeType = req.file.mimetype;
+        // Use validated format from magic bytes, NOT client-supplied MIME
+        const MIME_MAP = { jpeg: 'image/jpeg', png: 'image/png' };
+        const mimeType = MIME_MAP[detected] || req.file.mimetype;
 
         // Check if the filename itself reveals AI origin
         const aiKeywordMatch = checkAiFilename(originalName);
@@ -396,7 +387,7 @@ app.use((err, req, res, next) => {
             return res.status(400).json({ error: 'File too large. Maximum size is 5MB.' });
         }
         if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-            return res.status(400).json({ error: err.field || 'Invalid file uploaded. Please upload a valid image (JPG, PNG, WEBP).' });
+            return res.status(400).json({ error: err.field || 'Invalid file uploaded. Please upload a valid image (JPG, PNG).' });
         }
         return res.status(400).json({ error: `Upload error: ${err.message}` });
     } else if (err) {
@@ -417,7 +408,6 @@ function startServer(port) {
             logger.warn(`Port ${port} is busy. Killing the old process and retrying...`);
             const portNum = parseInt(port, 10);
             if (portNum > 0 && portNum <= 65535) {
-                const { exec } = await import('child_process');
                 exec(`for /f "tokens=5" %a in ('netstat -aon ^| findstr :${portNum} ^| findstr LISTENING') do taskkill /F /PID %a`, { shell: 'cmd.exe' }, () => {
                     setTimeout(() => startServer(port), 1500);
                 });
@@ -430,110 +420,8 @@ function startServer(port) {
     });
 }
 
-// --- Auto-Training Check ---
-// If any model file is missing, automatically run auto_train.py in the background.
-// The server boots immediately and starts serving — ML endpoints gracefully degrade
-// until training finishes and the Python APIs reload the new model files.
-// Skipped in test mode to keep tests fast and avoid hanging on missing data files.
-let textApiProcess = null, imageApiProcess = null, faceApiProcess = null;
-
-if (process.env.NODE_ENV !== 'test') {
-    const MODEL_FILES = [
-        { path: path.join(__dirname, 'fake_news_model.pkl'),      label: 'Text fake-news model' },
-        { path: path.join(__dirname, 'fake_news_vectorizer.pkl'), label: 'Text vectorizer' },
-        { path: path.join(__dirname, 'animal_model.onnx'),        label: 'Image classifier model' },
-    ];
-
-    const missingModels = MODEL_FILES.filter(m => !fs.existsSync(m.path));
-
-    if (missingModels.length > 0) {
-        const trainer = spawn('python', ['auto_train.py'], {
-            cwd: __dirname,
-            stdio: 'ignore',
-        });
-        trainer.on('close', (code) => {
-            if (code === 0) {
-                try { textApiProcess.kill(); } catch {}
-                try { imageApiProcess.kill(); } catch {}
-                try { faceApiProcess.kill(); } catch {}
-                textApiProcess = spawnPythonApi('ML Text API', 'python_api.py', 8000);
-                imageApiProcess = spawnPythonApi('ML Image API', 'animal_api.py', 8001);
-                faceApiProcess = spawnPythonApi('Face API', 'face_api.py', 8002);
-            }
-        });
-    }
-}
-
-// --- Start Python ML APIs Automatically (quiet mode) ---
-// Skip spawning in test mode to keep integration tests fast
-function spawnPythonApi(name, script, port) {
-    const proc = spawn('python', [script], { cwd: __dirname });
-    proc.stdout.on('data', () => {}); // suppress
-    proc.stderr.on('data', (data) => {
-        // Only log actual errors, not startup info
-        const s = data.toString().trim();
-        if (/error|traceback|exception|fail|warn/i.test(s)) logger.error(`[${name}] ${s}`);
-    });
-    proc.on('exit', (code) => {
-        if (code !== 0 && code !== null) {
-            setTimeout(() => {
-                const newProc = spawnPythonApi(name, script, port);
-                if (name === 'ML Text API') textApiProcess = newProc;
-                else if (name === 'ML Image API') imageApiProcess = newProc;
-                else if (name === 'Face API') faceApiProcess = newProc;
-            }, 3000);
-        }
-    });
-    return proc;
-}
-
-if (process.env.NODE_ENV !== 'test') {
-    textApiProcess = spawnPythonApi('ML Text API', 'python_api.py', 8000);
-    imageApiProcess = spawnPythonApi('ML Image API', 'animal_api.py', 8001);
-    faceApiProcess = spawnPythonApi('Face API', 'face_api.py', 8002);
-} else {
-    logger.info('[Test mode] Skipping Python API spawning.');
-}
-
-const API_HEALTH_URLS = [
-    { name: 'Text ML', url: 'http://127.0.0.1:8000/health' },
-    { name: 'Image ML', url: 'http://127.0.0.1:8001/health' },
-    { name: 'Face ID', url: 'http://127.0.0.1:8002/health' },
-];
-
-async function checkApiHealth(retries = 3, delay = 5000) {
-    for (const api of API_HEALTH_URLS) {
-        for (let attempt = 1; attempt <= retries; attempt++) {
-            try {
-                const res = await fetch(api.url, { signal: AbortSignal.timeout(5000) });
-                if (res.ok) break;
-            } catch {
-                if (attempt < retries) {
-                    await new Promise(r => setTimeout(r, delay));
-                }
-            }
-        }
-    }
-}
-
-// Health check every 60 seconds, first check after 5s
-// Skip in test mode so the process exits cleanly after integration tests
-if (process.env.NODE_ENV !== 'test') {
-    setTimeout(async () => {
-        await checkApiHealth(6, 7000);
-        const healthInterval = setInterval(() => checkApiHealth(1, 0), 60000);
-        healthInterval.unref();
-    }, 5000);
-}
-
-// Kill Python processes when Node.js shuts down
-function killAll() {
-    for (const p of [textApiProcess, imageApiProcess, faceApiProcess]) {
-        try { p.kill(); } catch {}
-    }
-}
-process.on('exit', killAll);
-process.on('SIGINT', () => { killAll(); process.exit(); });
+// Python ML services (face_api.py, animal_api.py, python_api.py) are NOT auto-spawned.
+// Run them manually if needed: python services/face_api.py, etc.
 
 // Only start when run directly (not imported as a module)
 // Decode URL-encoded path (e.g., %20 for spaces on Windows) before comparing

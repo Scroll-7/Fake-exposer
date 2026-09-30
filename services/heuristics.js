@@ -73,17 +73,21 @@ export function detectAiPortrait(description) {
     return null;
 }
 
+// Strict list of unambiguous AI image tool/generator names. Generic words like
+// "fake", "edited", "photoshop", or "generated" are deliberately NOT included —
+// they appear in innocent filenames ("edited_photo.jpg") and would cause false
+// hard verdicts. Shared by server.js (instant verdict) and detectAiFilename().
+export const AI_FILENAME_KEYWORDS = [
+    'midjourney', 'dall-e', 'dalle', 'stable-diffusion', 'stablediffusion',
+    'flux', 'comfyui', 'chatgpt', 'ai-generated', 'ai_generated',
+    'generated_by', 'deepfake', 'faceapp', 'bing image creator', 'nightcafe'
+];
+
 export function detectAiFilename(filename) {
     if (!filename) return null;
     const f = filename.toLowerCase();
 
-    const AI_KEYWORDS = [
-        'midjourney', 'dall-e', 'dalle', 'stable-diffusion', 'stablediffusion',
-        'flux', 'comfyui', 'chatgpt', 'ai-generated', 'ai_generated',
-        'generated_by', 'deepfake', 'faceapp', 'bing image creator', 'nightcafe'
-    ];
-
-    for (const keyword of AI_KEYWORDS) {
+    for (const keyword of AI_FILENAME_KEYWORDS) {
         if (f.includes(keyword)) {
             return `The original filename ("${filename}") explicitly contains the name of an AI image generator or AI tool ("${keyword}"). This is extremely strong evidence that the image is AI-generated.`;
         }

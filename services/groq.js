@@ -51,6 +51,11 @@ const QUERY_TOLERANCE_INSTRUCTIONS = `
     Users will often submit short, casual search queries or rumors (e.g., "mbape to real madrid"). 
     DO NOT flag minor spelling mistakes (e.g., "mbape" instead of "Mbappé"), lack of capitalization, or missing punctuation as "red flags". 
     Focus entirely on the factual accuracy of the core claim, not the user's grammar. If a user is asking about a known rumor or fact, evaluate the fact itself instead of criticizing the text format.
+
+    IMPORTANT — No Search Results Handling:
+    If the search results say "could not find relevant web results", this means the web search simply failed — it does NOT mean the claim is false.
+    In that case, use your general knowledge and internal reasoning to evaluate the claim.
+    DO NOT mark a claim as "Likely Fake" just because no web results were found. If you cannot verify, lean toward "Unable to Verify" rather than "Likely Fake."
 `;
 
 export async function analyzeContent(text) {
@@ -60,6 +65,25 @@ export async function analyzeContent(text) {
     // Truncate query for DuckDuckGo to avoid massive payload errors (DuckDuckGo expects short queries)
     const searchQuery = text.length > 300 ? text.substring(0, 300) : text;
     const searchResults = await searchWeb(searchQuery);
+
+    // Short-circuit: if search couldn't find anything and text is very short,
+    // skip the LLM call entirely — it wastes tokens and tends to return false
+    // "Likely Fake" for unverifiable short/typo-heavy claims.
+    const words = text.trim().split(/\s+/);
+    if (searchResults.includes('could not find relevant web results') && words.length < 20) {
+        return {
+            credibility_score: 50,
+            verdict: 'Unable to Verify',
+            bias: 'None',
+            sentiment: 'Neutral',
+            red_flags: ['Text is too short for thorough fact-checking and no supporting web evidence was found. Try providing a link to a news article.'],
+            green_flags: [],
+            summary: 'This text is too short to fact-check reliably, and the web search could not find matching results. The claim could be true or false — more context is needed.',
+            recommendations: ['Provide a link to a news article or official source', 'Provide more details about the claim'],
+            is_trusted_source: false,
+            trusted_source_name: ''
+        };
+    }
 
     // Truncate text for Llama model to prevent 413 Payload Too Large / Token Rate Limits
     // The TPM limit is 12000 tokens. Safely truncate to 15,000 characters.
@@ -141,7 +165,7 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
                     }
                 }
             }
-        } catch (e) {
+        } catch {
             logger.info('Local Python ML API not reachable or timed out, skipping ML score...');
         }
 
@@ -174,6 +198,7 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
 const VISION_MODELS = [
     'meta-llama/llama-4-scout-17b-16e-instruct',
     'meta-llama/llama-4-maverick-17b-128e-instruct',
+    'qwen/qwen3.6-27b',
 ];
 
 async function groqVisionRequest(messages, maxTokens = 500) {
@@ -205,18 +230,30 @@ async function groqVisionRequest(messages, maxTokens = 500) {
             if (!res.ok) {
                 const errBody = await res.text().catch(() => '');
                 const msg = `${res.status}: ${errBody.slice(0, 200)}`;
-                const isNoVision = errBody.includes('does not support image input') || errBody.includes('does not support images');
-                const isOverCapacity = res.status === 503 || errBody.includes('over capacity');
-                const isUnavailable = res.status === 404 || errBody.includes('unavailable');
-                if (isOverCapacity || isUnavailable || isNoVision) {
+                const noVision = /does not support image/i.test(errBody);
+                const transient = res.status === 429 || res.status === 503 || res.status === 404 ||
+                    !errBody || /over capacity|unavailable|rate limit|too many requests|temporarily/i.test(errBody);
+                if (noVision || transient) {
+                    // Transient (rate limit / over capacity) or "this model can't see images" —
+                    // fall through to the next model.
                     logger.warn(`Model ${model} unavailable (${res.status}): ${msg.slice(0, 120)} — trying next...`);
                     lastError = new Error(msg);
                     continue;
                 }
+                // Non-transient error (e.g. 400 invalid image data, 401 auth) — retrying
+                // other models would fail identically and burn quota. Abort immediately.
+                logger.warn(`Model ${model} returned non-transient error ${res.status}: ${msg.slice(0, 120)} — aborting vision request.`);
                 throw new Error(`Groq API error: ${msg}`);
             }
 
             const completion = await res.json();
+            // Detect vision error returned as 200 OK with error text in content
+            const content = completion?.choices?.[0]?.message?.content || '';
+            if (/does not support image|cannot read|cannot process|unable to process/i.test(content)) {
+                logger.warn(`Model ${model} returned error text in 200 response — trying next...`);
+                lastError = new Error(content.slice(0, 200));
+                continue;
+            }
             logger.info(`Vision model ${model} succeeded.`);
             return completion;
         } catch (err) {
@@ -344,7 +381,12 @@ Be very specific and honest about uncertainty.`
                         ]
                     }
                 ], 250);
-                const desc = descCompletion.choices[0]?.message?.content || '';
+                let desc = descCompletion.choices[0]?.message?.content || '';
+                // If the model returns an error instead of a description, treat as failed
+                if (/does not support image|cannot read|cannot process|model.*not support|unable to process/i.test(desc)) {
+                    logger.warn(`Groq Description returned error text instead of description: "${desc.slice(0, 120)}"`);
+                    desc = '';
+                }
                 logger.info(`Groq Description completed in ${Date.now() - descStartTime}ms. Output length: ${desc.length}`);
                 return desc;
             } catch (err) {
@@ -359,7 +401,6 @@ Be very specific and honest about uncertainty.`
 
     // Nonescape local ONNX model result — complementary AI detection
     const nonescapeAiProb = nonescapeResult?.ai_probability;
-    const nonescapeAuthProb = nonescapeResult?.authentic_probability;
     let nonescapeNote = '';
     if (nonescapeAiProb !== undefined) {
         const pct = Math.round(nonescapeAiProb * 100);
@@ -393,15 +434,22 @@ Be very specific and honest about uncertainty.`
     // Note: searchWeb() is intentionally omitted from the image analysis path.
     // Web search is designed for text fact-checking — for images it adds 5-10s
     // of unreliable DuckDuckGo scraping with negligible factual value.
-    const searchResults = 'No recent news found.';
+    const searchResults = 'Search engines could not find relevant web results for this query. This does not mean the claim is false — only that no matching pages were found online. Fact-check based on general knowledge and internal reasoning.';
 
     // ── STEP 1.5a: Local KB jersey mismatch check (offline, instant) ──
     // Check the Step 1 description, user context, and Face API result combined.
     // The LLM is instructed NOT to guess the player from facial features, so it may
     // avoid naming the player even when the face is obvious. The user's own input
     // ("Is Neymar in an AC Milan jersey real?") fills that gap.
-    const mismatchText = [imageDescription, userContext, faceIdOverride].filter(Boolean).join(' ');
+    const mismatchText = [imageDescription || aiDetection?.description, userContext, faceIdOverride, aiDetection?.reasoning].filter(Boolean).join(' ');
     let jerseyMismatch = detectJerseyMismatch(mismatchText);
+    // Clear jersey mismatch if text contains transfer-news keywords — the check is
+    // for PHOTOS of players in the wrong jersey, not for text articles about transfers
+    // Only check user-provided text for transfer keywords — AI-generated analysis
+    // text commonly contains false-positives like "transfer" (face transfer), "deal" (digital manipulation).
+    if (jerseyMismatch && /signs?|joins?|transfers?|announces?|agreement|deal|completed|confirmed|here we go|move to|has joined|has signed/i.test(`${userContext} ${faceIdOverride || ''}`)) {
+        jerseyMismatch = null;
+    }
 
     // Fallback: if a team jersey IS clearly visible but NO player name can be
     // matched from any source (description, user context, or Face API), flag
@@ -421,15 +469,17 @@ Be very specific and honest about uncertainty.`
     // add a suspicion flag. This catches cases where the LLM describes a player
     // in a jersey but doesn't name them (e.g., Messi in a Real Madrid jersey
     // described as "a man in a white jersey").
-    const sportsWarning = detectSportsSuspicion(faceIdOverride, jerseyMismatch, imageDescription, findTeamInText);
 
     // ── STEP 2.5: Rule-based heuristics ──
-    const physiqueWarning = detectExtremePhysiqueCasualSetting(imageDescription);
+    // When Groq vision fails (empty description), use Gemini's description as fallback
+    const heuristicDesc = imageDescription || aiDetection?.description || aiDetection?.reasoning || '';
+    const sportsWarning = detectSportsSuspicion(faceIdOverride, jerseyMismatch, heuristicDesc, findTeamInText, aiDetection?.imageCategory);
+    const physiqueWarning = detectExtremePhysiqueCasualSetting(heuristicDesc);
     if (physiqueWarning) {
         logger.warn(`Physique heuristic triggered: ${physiqueWarning}`);
     }
 
-    const portraitWarning = detectAiPortrait(imageDescription);
+    const portraitWarning = detectAiPortrait(heuristicDesc);
     if (portraitWarning) {
         logger.warn(`Portrait heuristic triggered: ${portraitWarning}`);
     }
@@ -608,18 +658,35 @@ Be very specific and honest about uncertainty.`
         let responseText = completion.choices[0]?.message?.content || '{}';
         // Clean markdown blocks if vision model ignores json_object format
         responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const llmResult = JSON.parse(responseText);
+
+        // If the model returned an error message instead of JSON, treat as vision-down
+        if (/does not support image|cannot read|cannot process|model.*not support|unable to process/i.test(responseText)) {
+            throw new Error(`Vision model returned error: ${responseText.slice(0, 200)}`);
+        }
+
+        let llmResult;
+        try {
+            llmResult = JSON.parse(responseText);
+        } catch (parseErr) {
+            throw new Error(`Vision response was not valid JSON. ${parseErr.message}`, { cause: parseErr });
+        }
         llmResult.face_identified = faceIdOverride || null;
 
         // ── POST-STEP-3 RE-CHECK FOR JERSEY MISMATCH ──
         // The LLM might name the player/team in its verdict even when Step 1 didn't.
         // Also includes user context and Face API result (same as the pre-check).
+        // Skip for transfer announcements, screenshots, or trusted sources.
         if (!jerseyMismatch) {
             const combinedLlmText = `${llmResult.summary || ''} ${llmResult.verdict || ''} ${(llmResult.red_flags || []).join(' ')} ${userContext || ''} ${faceIdOverride || ''}`;
-            const postCheckMismatch = detectJerseyMismatch(combinedLlmText);
-            if (postCheckMismatch) {
-                logger.info(`[Sports Check] Post-LLM check caught mismatch: ${postCheckMismatch.player} + ${postCheckMismatch.jerseyTeam}`);
-                jerseyMismatch = postCheckMismatch;
+            // Only check user-provided text for transfer keywords (see pre-check comment above)
+            const isLLMTransfer = /signs?|joins?|transfers?|announces?|agreement|deal|completed|confirmed|here we go|move to|has joined|has signed/i.test(`${userContext} ${faceIdOverride || ''}`);
+            const llmHasSource = extractTrustedSource(combinedLlmText);
+            if (!isLLMTransfer && !llmHasSource && aiDetection?.imageCategory !== 'Screenshot') {
+                const postCheckMismatch = detectJerseyMismatch(combinedLlmText);
+                if (postCheckMismatch) {
+                    logger.info(`[Sports Check] Post-LLM check caught mismatch: ${postCheckMismatch.player} + ${postCheckMismatch.jerseyTeam}`);
+                    jerseyMismatch = postCheckMismatch;
+                }
             }
         }
 
@@ -765,7 +832,7 @@ Be very specific and honest about uncertainty.`
         }
 
         if (unverifiableIdentity && (llmResult.credibility_score ?? 100) > 45) {
-            const cappedScore = 35;
+            const cappedScore = 15;
             logger.warn(`Unverifiable identity cap: jersey shows ${unverifiableIdentity} but no player name — score ${llmResult.credibility_score} → ${cappedScore}`);
             return {
                 ...llmResult,
@@ -864,7 +931,7 @@ Be very specific and honest about uncertainty.`
                     }
                 }
             }
-        } catch (e) {
+        } catch {
             logger.warn('Image classifier API not reachable, skipping...');
         }
 
@@ -873,9 +940,12 @@ Be very specific and honest about uncertainty.`
         const detail = error?.error?.message || error?.message || 'Unknown error';
         logger.error('Groq image analysis error:', detail, error);
 
+        // Safety net: if the fallback path itself throws, return a safe default
+        try {
+
         // ── FALLBACK: When Groq vision is unavailable, return a result from
         // Gemini + heuristics + local models instead of crashing.
-        const isVisionDown = /vision model|does not support image|unavailable/i.test(detail);
+        const isVisionDown = /vision model|does not support image|cannot read|cannot process|unable to process|model.*not support|unavailable|rate limit|429/i.test(detail);
         if (isVisionDown) {
             logger.warn('Groq vision unavailable — returning degraded result from Gemini + heuristics.');
 
@@ -894,13 +964,16 @@ Be very specific and honest about uncertainty.`
                 face_identified: faceIdOverride || null,
             };
 
-            // Inject heuristics as red flags
-            if (portraitWarning) {
+            // Screenshots don't trigger portrait/physique/sports heuristics
+            const isScreenshot = aiDetection?.imageCategory === 'Screenshot';
+
+            // Inject heuristics as red flags (skip all for screenshots)
+            if (!isScreenshot && portraitWarning) {
                 fallback.red_flags.push(`🤖 ${portraitWarning}`);
                 fallback.credibility_score = Math.min(fallback.credibility_score, 35);
                 fallback.summary = `Local heuristic flagged this as a possible AI portrait. ${fallback.summary}`;
             }
-            if (physiqueWarning) {
+            if (!isScreenshot && physiqueWarning) {
                 fallback.red_flags.push(`🏋️ ${physiqueWarning}`);
                 fallback.credibility_score = Math.min(fallback.credibility_score, 30);
             }
@@ -908,6 +981,22 @@ Be very specific and honest about uncertainty.`
                 fallback.red_flags.push(`📁 ${filenameWarning}`);
                 fallback.credibility_score = 5;
                 fallback.verdict = 'Confirmed AI-Generated (Filename Reveals AI Origin)';
+            }
+
+            // Check if Gemini description mentions a known trusted source
+            const combinedText = [userContext, aiDetection?.description, aiDetection?.reasoning].filter(Boolean).join(' ');
+            const foundSource = extractTrustedSource(combinedText);
+            if (foundSource) {
+                fallback.is_trusted_source = true;
+                fallback.trusted_source_name = foundSource;
+            }
+
+            // Detect transfer-news keywords — if the text says "signs", "joins", "here we go"
+            // etc., the jersey mismatch check is irrelevant (it's a news article, not a photo).
+            const isTransferNews = /signs?|joins?|transfers?|announces?|agreement|deal|completed|confirmed|here we go|move to|has joined|has signed/i.test(combinedText);
+            // Clear any main-path jersey mismatch if it's a transfer announcement, screenshot, or trusted source
+            if (jerseyMismatch && (isScreenshot || foundSource || isTransferNews)) {
+                jerseyMismatch = null;
             }
 
             // Inject Gemini result if available
@@ -926,6 +1015,46 @@ Be very specific and honest about uncertainty.`
                 }
             }
 
+            // Gemini positive boost: when Groq is down but Gemini independently
+            // says the image is Real/Likely Real with Medium+ confidence, raise score.
+            // Soft warnings (aiOverride.softWarning) don't block this boost.
+            // Screenshots bypass all heuristic guards.
+            const hardOverride = aiOverride && !aiOverride.softWarning;
+            const heuristicBlock = !isScreenshot && (portraitWarning || physiqueWarning || jerseyMismatch);
+            // Selfie/portrait category: Gemini is notoriously bad at detecting its own
+            // generated portraits — don't boost when Groq is down and the image is a
+            // portrait, selfie, or headshot (Gemini's most common and least reliable category).
+            const isSelfiePortrait = (aiDetection?.imageCategory || '').match(/mirror selfie|portrait|headshot/i);
+            if (aiDetection && !hardOverride && !heuristicBlock && !filenameWarning && !isSelfiePortrait) {
+                const gv = (aiDetection.verdict || '').toLowerCase();
+                const gc = (aiDetection.confidence || '').toLowerCase();
+                if ((gv.includes('real') || gv === 'likely real') && (gc === 'high' || gc === 'medium')) {
+                    const boost = gv === 'real' ? 85 : 75;
+                    fallback.credibility_score = Math.max(fallback.credibility_score, boost);
+                    fallback.verdict = aiDetection.verdict;
+                    fallback.green_flags.push(`🤖 Gemini AI forensics classified this image as: ${aiDetection.verdict} (${aiDetection.confidence} confidence)`);
+                    fallback.summary = `${aiDetection.reasoning || ''} ${fallback.summary}`.trim();
+                }
+            }
+            // Selfie/portrait flagged by Gemini with false "Real" verdict: inject suspicion
+            if (isSelfiePortrait && aiDetection && !filenameWarning) {
+                const gv = (aiDetection.verdict || '').toLowerCase();
+                if (gv.includes('real') || gv === 'likely real') {
+                    fallback.red_flags.push('⚠️ Gemini classified this portrait/selfie as "Real", but AI models commonly misclassify their own generated portraits. Treat this verdict with caution.');
+                    fallback.summary = `[Caution: Gemini portrait self-assessment may be unreliable] ${fallback.summary}`;
+                }
+            }
+
+            // Screenshot boost: even if Gemini's verdict isn't "Real", a screenshot
+            // category means it's a capture of real content — boost to 80.
+            if (isScreenshot && fallback.credibility_score < 80 && !filenameWarning && !jerseyMismatch) {
+                fallback.credibility_score = Math.min(85, Math.max(fallback.credibility_score, 80));
+                if (fallback.verdict.startsWith('Unable to Complete')) {
+                    fallback.verdict = 'Likely Real — Screenshot of Social Media Post';
+                }
+                fallback.green_flags.push('📸 Gemini classified this as a screenshot — a capture of real content, not AI-generated');
+            }
+
             // Inject Nonescape model result
             if (nonescapeAiProb !== undefined && nonescapeAiProb > 0.5) {
                 fallback.red_flags.push(`🤖 Local AI Detection Model: ${Math.round(nonescapeAiProb * 100)}% AI probability`);
@@ -938,8 +1067,16 @@ Be very specific and honest about uncertainty.`
                 if (!aiOverride) fallback.credibility_score = Math.max(45, fallback.credibility_score);
             }
 
-            // Jersey mismatch (from local KB)
-            if (jerseyMismatch) {
+            // Jersey mismatch — re-check using available text (user context, face ID,
+            // Gemini reasoning) since Groq vision may have failed to describe the image.
+            // Skip for: screenshots, trusted sources, or transfer-announcement text
+            // (the jersey check is designed for PHOTOS of players wearing the wrong jersey,
+            // not for text articles about transfers).
+            if (!isScreenshot && !foundSource && !isTransferNews && !jerseyMismatch) {
+                const fallbackText = [userContext, faceIdOverride, aiDetection?.description, aiDetection?.reasoning, aiDetection?.imageCategory].filter(Boolean).join(' ');
+                if (fallbackText) jerseyMismatch = detectJerseyMismatch(fallbackText);
+            }
+            if (jerseyMismatch && !isScreenshot && !foundSource && !isTransferNews) {
                 fallback.credibility_score = 8;
                 fallback.verdict = `Fake / Manipulated — ${jerseyMismatch.player} never played for ${jerseyMismatch.jerseyTeam}`;
                 fallback.red_flags.push(`⚽ Jersey mismatch: ${jerseyMismatch.player} has NEVER played for ${jerseyMismatch.jerseyTeam}`);
@@ -947,30 +1084,81 @@ Be very specific and honest about uncertainty.`
                 fallback.summary = jerseyMismatch.mismatchMsg;
             }
 
+            // Unverifiable identity: jersey visible but no player name matched
+            if (unverifiableIdentity && !isScreenshot && !foundSource && fallback.credibility_score > 20) {
+                fallback.credibility_score = Math.min(fallback.credibility_score, 15);
+                fallback.verdict = 'Suspicious — Unverifiable Person in Team Jersey';
+                fallback.red_flags.push(`⚽ The jersey shows ${unverifiableIdentity}, but who the person is could not be determined`);
+            }
+
             fallback.credibility_score = Math.max(0, Math.min(100, fallback.credibility_score));
             return fallback;
         }
+        } catch (fbErr) {
+            logger.error('Fallback path threw:', fbErr);
+            return {
+                credibility_score: 40,
+                verdict: 'Analysis Incomplete (Internal Error)',
+                bias: 'Unknown',
+                sentiment: 'Neutral',
+                red_flags: ['An internal error occurred during fallback analysis.'],
+                green_flags: [],
+                summary: 'Groq vision unavailable and fallback encountered an error.',
+                recommendations: ['Try again later.', 'Consider using Text or URL analysis as an alternative.'],
+                is_trusted_source: false,
+                trusted_source_name: '',
+                face_identified: faceIdOverride || null,
+            };
+        }
 
-        throw new Error(`Image analysis failed: ${detail}`);
+        throw new Error(`Image analysis failed: ${detail}`, { cause: error });
     }
+}
+
+// ── Trusted source detection in fallback text (when Groq is down) ──
+const KNOWN_TRUSTED_SOURCES = [
+    'Fabrizio Romano', 'David Ornstein', 'Florian Plettenberg', 'Shams Charania', 'Adrian Wojnarowski',
+    'Sky Sports', 'ESPN', 'BBC', 'Reuters', 'AP News', 'AFP', 'The Guardian', 'NYT', 'Washington Post',
+    'Bloomberg', 'WSJ', 'Marques Brownlee', 'MKBHD', 'IGN', 'The Verge', 'TechCrunch', 'Jason Schreier',
+    'WHO', 'CDC', 'NASA', 'Nature', 'Science Magazine', 'Neil deGrasse Tyson', 'Andrew Huberman',
+    'Financial Times', 'The Economist',
+];
+const KNOWN_TRUSTED_PATTERNS = KNOWN_TRUSTED_SOURCES.map(s => new RegExp('\\b' + s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i'));
+export function extractTrustedSource(text) {
+    if (!text) return null;
+    for (let i = 0; i < KNOWN_TRUSTED_PATTERNS.length; i++) {
+        if (KNOWN_TRUSTED_PATTERNS[i].test(text)) return KNOWN_TRUSTED_SOURCES[i];
+    }
+    return null;
 }
 
 // ── Sports context suspicion (when Face API is unavailable) ──
 // If we couldn't run the Face API (faceIdOverride is null) AND the image
 // description suggests sports content but no player+team combo was matched,
 // return a suspicion flag. Pure function, easily testable.
-const SPORTS_KEYWORDS = /\b(jersey|kit|stadium|football|soccer|player|team|club|match|field|pitch|goal|goalie|referee|manager|transfer|badge|sponsor|training|warm.?up|substitute|captain|captaincy)\b/i;
-const SPORTS_KEYWORD_LIST = ['jersey', 'kit', 'stadium', 'football', 'soccer', 'player', 'team', 'club', 'match', 'field', 'pitch', 'goal', 'goalie', 'referee', 'manager', 'transfer', 'badge', 'sponsor', 'training', 'warm-up', 'warmup', 'substitute', 'captain', 'captaincy'];
+// Sports keywords — keep only unambiguous sports terms.
+// "field" is excluded (agricultural/nature context), "kit" excluded (tool/animal context),
+// "club" excluded (social/dining context).
+const SPORTS_KEYWORDS = /\b(jersey|stadium|football|soccer|player|team|match|pitch|goal|goalie|referee|manager|transfer|badge|sponsor|training|warm.?up|substitute|captain|captaincy)\b/gi;
 
-export function detectSportsSuspicion(faceIdOverride, jerseyMismatch, imageDescription, findTeamFn = findTeamInText) {
+// Anti-keywords: if any appear in the description, do NOT flag as sports
+// Includes nature, agriculture, and selfie/portrait terms
+const SPORTS_ANTI_KEYWORDS = /\b(cow|cattle|farm|farmer|agriculture|pasture|barn|hay|garden|landscape|scenery|village|rural|nature|hike|picnic|animal|dog|cow|crop|field|grass|meadow|orchard|park|selfie|mirror|portrait|headshot|bedroom|bathroom|sink|doorway|hallway)\b/i;
+
+export function detectSportsSuspicion(faceIdOverride, jerseyMismatch, imageDescription, findTeamFn = findTeamInText, geminiCategory) {
     if (faceIdOverride || jerseyMismatch) return null;
     if (!imageDescription) return null;
-    // Require at least 2 sports keywords to prevent false positives
-    // (e.g., "woman in a shirt taking a selfie" should NOT trigger sports detection)
+    // If Gemini explicitly says this is a selfie or portrait, skip
+    if (geminiCategory && /mirror selfie|portrait|headshot/i.test(geminiCategory)) return null;
     const lowerDesc = imageDescription.toLowerCase();
-    const matchCount = SPORTS_KEYWORD_LIST.filter(kw => lowerDesc.includes(kw)).length;
-    if (matchCount < 2) return null;
+    // If the description has non-sports keywords, don't flag as sports
+    if (SPORTS_ANTI_KEYWORDS.test(lowerDesc)) return null;
+    // Use word-boundary regex to prevent substring false matches
+    // Require 3+ keyword matches to reduce false positives on selfies
+    // where Groq may hallucinate terms like "player" or "training"
+    const matchCount = (lowerDesc.match(SPORTS_KEYWORDS) || []).length;
+    if (matchCount < 3) return null;
     const teamName = findTeamFn(imageDescription);
     if (teamName) return null;
-    return 'Sports image detected but the player or team could not be identified. Unverifiable sports images may be altered.';
+    return 'Sports image detected but the player or team could not be identified. Unverifiable sports images may be analyzed.';
 }

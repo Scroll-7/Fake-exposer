@@ -8,6 +8,7 @@
     "start": "node server.js",
     "dev": "node server.js",
     "test": "node --test test/**/*.test.js",
+    "test:e2e": "npx playwright test test/e2e.spec.js",
     "test:unit": "node --test test/heuristics.test.js test/sportsKB.test.js test/groq.test.js",
     "lint": "eslint . --ext .js,.mjs",
     "lint:fix": "eslint . --ext .js,.mjs --fix",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.61.1",
     "eslint": "^10.6.0"
   }
 }

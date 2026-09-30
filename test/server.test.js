@@ -95,6 +95,52 @@ describe('Server API Endpoints', () => {
         assert.equal(data.error, 'Image is required');
     });
 
+    it('/api/analyze/image rejects GIF uploads with a clear message', async () => {
+        skipIfOffline();
+        const form = new FormData();
+        const gifBytes = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00]);
+        form.append('image', new Blob([gifBytes], { type: 'image/gif' }), 'animated.gif');
+        const res = await fetch(`${BASE}/api/analyze/image`, { method: 'POST', body: form });
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.match(data.error, /JPG|PNG/);
+    });
+
+    it('/api/analyze/image rejects files with unknown magic bytes', async () => {
+        skipIfOffline();
+        const form = new FormData();
+        const txtBytes = Uint8Array.from([0x48, 0x65, 0x6C, 0x6C, 0x6F]); // "Hello"
+        form.append('image', new Blob([txtBytes], { type: 'image/png' }), 'fake.png');
+        const res = await fetch(`${BASE}/api/analyze/image`, { method: 'POST', body: form });
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.match(data.error, /JPEG and PNG are accepted/);
+    });
+
+    it('/api/analyze/image returns instant fake verdict for AI-tool filenames', async () => {
+        skipIfOffline();
+        const form = new FormData();
+        const pngBytes = Uint8Array.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        form.append('image', new Blob([pngBytes], { type: 'image/png' }), 'chatgpt_image.png');
+        const res = await fetch(`${BASE}/api/analyze/image`, { method: 'POST', body: form });
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.verdict, 'Confirmed Fake / AI-Generated');
+        assert.equal(data.credibility_score, 5);
+    });
+
+    it('/api/analyze/url returns 400 for non-http(s) schemes', async () => {
+        skipIfOffline();
+        const res = await fetch(`${BASE}/api/analyze/url`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: 'file:///etc/passwd' })
+        });
+        assert.equal(res.status, 400);
+        const data = await res.json();
+        assert.equal(data.error, 'Only http/https URLs are supported');
+    });
+
     it('returns 404 for unknown routes', async () => {
         skipIfOffline();
         const res = await fetch(`${BASE}/nonexistent`);

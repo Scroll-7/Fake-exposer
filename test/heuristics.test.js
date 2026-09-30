@@ -55,4 +55,11 @@ describe('detectAiFilename', () => {
         assert.equal(detectAiFilename('IMG_20240601_123456.jpg'), null);
         assert.equal(detectAiFilename('Screenshot_2024.png'), null);
     });
+
+    it('does NOT flag generic words like fake, edited, or generated', () => {
+        assert.equal(detectAiFilename('edited_family_photo.jpg'), null);
+        assert.equal(detectAiFilename('fake_news_screenshot.png'), null);
+        assert.equal(detectAiFilename('enhanced_logo.png'), null);
+        assert.equal(detectAiFilename('generated_report_final.jpg'), null);
+    });
 });

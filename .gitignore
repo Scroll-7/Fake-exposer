@@ -15,3 +15,10 @@ uploads/
 __pycache__/
 test_cat.png
 image_cache.json
+
+# Logs
+*.log
+
+# Playwright artifacts
+test-results/
+playwright-report/
