@@ -41,6 +41,6 @@ The entire project is open-source. 99 tests pass, Playwright E2E tests included.
 
 The Messi photo got a score of **8/100 — Confirmed FAKE**. That's the kind of result I want everyone to have access to.
 
-[Link to the project]
+[github.com/Scroll-7/Fake-exposer](https://github.com/Scroll-7/Fake-exposer)
 
 *Thoughts? Questions? I'd love to hear from other builders working on misinformation detection.*
