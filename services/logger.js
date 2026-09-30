@@ -1,9 +1,19 @@
 const LEVELS = { ERROR: 0, WARN: 1, INFO: 2, DEBUG: 3 };
 const current = LEVELS[(process.env.LOG_LEVEL || 'INFO').toUpperCase()] ?? LEVELS.INFO;
 
+function stringify(arg) {
+    if (typeof arg === 'string') return arg;
+    if (arg instanceof Error) return arg.stack || arg.message;
+    try {
+        return JSON.stringify(arg);
+    } catch {
+        return String(arg);
+    }
+}
+
 function format(level, args) {
     const ts = new Date().toISOString();
-    return [`[${ts}] [${level}]`, ...args];
+    return [`[${ts}] [${level}]`, ...args.map(stringify)];
 }
 
 export const logger = {

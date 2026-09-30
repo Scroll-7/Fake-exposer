@@ -37,14 +37,18 @@ echo ==========================================
 echo   Fake News Detector - Starting all services
 echo ==========================================
 echo.
-echo   Server will spawn all Python APIs (ports 8000-8002)
+echo   Server will start on http://localhost:3001
+echo   Python APIs (ports 8000-8002) are optional — run them manually if needed
+echo.
 echo   Open http://localhost:3001 when ready
 echo.
 echo   Press Ctrl+C to stop all services
 echo ==========================================
 echo.
 
-:: Single npm start — server.js handles all Python API spawning
+:: Single npm start — Python APIs are NOT auto-spawned.
+:: Start them manually in separate terminals if desired:
+::   python python_api.py / animal_api.py / face_api.py
 npm start
 
 :: If npm start exits, pause so user can see the error

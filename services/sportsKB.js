@@ -347,7 +347,7 @@ export function detectJerseyMismatch(text) {
         .sort((a, b) => b[0].length - a[0].length);
     let matchedPlayer = null;
     let matchedPlayerDisplay = null;
-    for (const [alias, clubs] of playerEntries) {
+    for (const [alias] of playerEntries) {
         if (d.includes(alias)) {
             matchedPlayer = alias;
             matchedPlayerDisplay = alias.split(' ').map(w => w[0].toUpperCase() + w.slice(1)).join(' ');

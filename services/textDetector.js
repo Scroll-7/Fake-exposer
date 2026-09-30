@@ -171,10 +171,6 @@ const AI_TRANSITIONS = new Set([
   'delve', 'delving', 'underscore', 'underscores', 'underscoring',
 ]);
 
-function hasColloquial(words) {
-  return words.some(w => COLLOQUIAL.has(w));
-}
-
 function countAiTransitions(words) {
   return words.filter(w => AI_TRANSITIONS.has(w)).length;
 }
@@ -183,14 +179,6 @@ function splitSentences(text) {
   // Split on sentence-ending punctuation, handling common abbreviations
   const raw = text.split(/(?<=[.!?])\s+/);
   return raw.filter(s => s.trim().length > 0);
-}
-
-function getWordRarity(word) {
-  const freq = WORD_FREQ[word];
-  if (freq !== undefined) {
-    return Math.max(0, 4.87 - freq) / 4.87; // 0 = very common, 1 = very rare among known words
-  }
-  return 1.0; // Unknown words = rare (human-like)
 }
 
 /**

@@ -300,7 +300,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
         }, 100);
 
-        const credibility = data.credibility_score; // 0-100 (high = real)
+        const credibility = typeof data.credibility_score === 'number' ? data.credibility_score : 50; // 0-100 (high = real)
 
         // ── Decide whether to show FAKE% or REAL% ──
         // If credibility < 50 → the image is more fake → show FAKE %

@@ -30,7 +30,7 @@ server.js (433 lines)
 │   ├── heuristics.js    (93 lines)   — Pure rules: physique, portrait, filename
 │   ├── retry.js         (29 lines)   — Exponential backoff utility
 │   └── logger.js        (17 lines)   — Structured logging (ISO ts + 4 levels)
-├── python APIs (auto-spawned):
+├── python APIs (optional — run manually, not auto-spawned):
 │   ├── python_api.py    (60 lines)   — Text classification (TF-IDF + LR)
 │   ├── animal_api.py    (132 lines)  — Image classification + AI detection
 │   └── face_api.py      (114 lines)  — InsightFace recognition
@@ -240,6 +240,11 @@ POST /api/detect/text { text }
 | Image endpoint shares same generous rate limit (60/hr) | FIXED — image endpoint has its own 15/hr limit to protect API costs. |
 | No rate limit on `/api/detect/text` | FIXED — 120/hr limit applied. |
 | Control characters / null bytes in text inputs | FIXED — `sanitize()` strips `\x00-\x08\x0B\x0C\x0E-\x1F\x7F` from all text/URL inputs. |
+| Vision model retried on ANY error (incl. 400) | FIXED — `groqVisionRequest` now treats 429/503/404/no-vision as transient (try next model) and aborts immediately on non-transient errors (e.g. 400 invalid image) instead of burning all model calls. |
+| GIF/WebP uploads silently degraded to "unable to analyze" | FIXED — uploads restricted to JPEG/PNG (multer + magic bytes + MIME map). Clear 400 message returned for GIF/WebP/unknown types. |
+| SSRF via `/api/analyze/url` (scrapeDirect) | FIXED — `validatePublicUrl()` blocks non-http(s) schemes and any host resolving to private/loopback/link-local IPs (fail-closed, per redirect hop, `redirect: 'manual'`). Plus scheme guard in the URL route. |
+| Filename instant-verdict false positives (generic words) | FIXED — server's wide `AI_FILENAME_KEYWORDS` (`fake`, `edited`, `enhanced`, `photoshop`, `gpt`, `openai`, `generated`, …) removed. Both hard-verdict paths now share the strict list exported from `heuristics.js` (only unambiguous AI tool names). |
+| Docs claim Python APIs auto-spawn (server no longer does) | FIXED — README + start.bat + PROJECT_MAP updated to reflect manual run. |
 
 ---
 

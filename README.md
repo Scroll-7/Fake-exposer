@@ -39,10 +39,16 @@ cp .env.example .env  # Add GROQ_API_KEY, etc.
 npm start             # Runs on http://localhost:3000
 ```
 
-The Face API auto-spawns on port 8002 on first request. Requires Python 3.8+ with:
+The Python ML APIs (text classification, image classification, Face ID) are **not** auto-spawned by the server. Run them manually if you want those features — the server degrades gracefully without them. Requires Python 3.8+ with:
 ```
 pip install fastapi uvicorn insightface opencv-python numpy onnxruntime
+
+python python_api.py     # port 8000 — ML text classification
+python animal_api.py     # port 8001 — ML image classification + AI detection
+python face_api.py       # port 8002 — Face ID recognition
 ```
+
+> **Note:** Image analysis currently accepts **JPEG and PNG only**. GIF/WebP are rejected because the vision providers (Groq vision, Gemini) cannot process them.
 
 ## API Endpoints
 

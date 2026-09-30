@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { detectJerseyMismatch, getCelebrityContext, CELEBRITY_CONTEXTS } from '../services/sportsKB.js';
 import { detectSportsSuspicion } from '../services/groq.js';
-import { findTeamInText } from '../services/sportsKB.js';
 
 describe('detectJerseyMismatch', () => {
     it('returns null for undefined input', () => {
@@ -101,7 +100,7 @@ describe('detectSportsSuspicion', () => {
     });
 
     it('returns warning for sports context with no team and no face ID', () => {
-        const result = detectSportsSuspicion(null, null, 'a man in a jersey standing on a field');
+        const result = detectSportsSuspicion(null, null, 'a man in a jersey standing on a football pitch');
         assert.ok(result);
         assert.ok(result.includes('Sports image detected'));
         assert.ok(result.includes('player or team could not be identified'));
@@ -125,9 +124,9 @@ describe('detectSportsSuspicion', () => {
 
     it('uses custom findTeamFn when provided', () => {
         const customFind = (text) => text.includes('custom_team') ? 'Custom Team' : null;
-        const result1 = detectSportsSuspicion(null, null, 'jersey field custom_team', customFind);
+        const result1 = detectSportsSuspicion(null, null, 'jersey player custom_team', customFind);
         assert.equal(result1, null);
-        const result2 = detectSportsSuspicion(null, null, 'jersey on a field', customFind);
+        const result2 = detectSportsSuspicion(null, null, 'jersey on a football pitch all match day', customFind);
         assert.ok(result2);
     });
 

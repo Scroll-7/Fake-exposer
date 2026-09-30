@@ -35,7 +35,8 @@ B) Casual mirror selfie / gym selfie / bathroom selfie (person holding phone in 
 C) Portrait / Headshot / Passport Photo (person facing camera, mostly face/shoulders visible, often against a plain, neutral, or simple background)
 D) Group photo / Crowd scene (multiple people, events, parties, background characters)
 E) Politician, celebrity, or public figure in a highly dramatic or unusual situation
-F) Other (street photo, sports action shot, etc.)
+F) Screenshot / Social Media Post (a capture of text from X/Twitter, Instagram, news article, etc.)
+G) Other (street photo, sports action shot, etc.)
 
 The category determines how strict you should be.
 
@@ -107,7 +108,15 @@ STEP 5: PUBLIC FIGURE CHECKS (If Category E)
 → IF this is a public figure in an unusual situation (e.g. Pope in a puffy jacket, politician getting arrested), it is almost certainly an AI deepfake. Flag it heavily.
 
 ═══════════════════════════════════════════════
-STEP 6: CALIBRATED SCORING GUIDE
+STEP 6: SCREENSHOT CHECKS (If Category F)
+═══════════════════════════════════════════════
+→ Screenshots of social media posts, news articles, or text messages are REAL by nature.
+→ Do NOT flag compression artifacts, sharp text, or uniform UI elements as AI artifacts.
+→ Screenshots of tweets from verified journalists (checkmark visible) should be treated as Real.
+→ Only flag a screenshot as AI if there are unequivocal deepfake visual artifacts (e.g. morphed text, warped faces in included photos).
+
+═══════════════════════════════════════════════
+STEP 7: CALIBRATED SCORING GUIDE
 ═══════════════════════════════════════════════
 
 Use these EXACT scoring anchors depending on the category:
@@ -137,17 +146,18 @@ IMPORTANT: For Category B (casual mirror selfie), a person who is genuinely lean
 For Category A (bodybuilding competition): be lenient — scores should typically be 0–30% unless there are obvious AI artifacts beyond the expected extreme conditioning.
 
 ═══════════════════════════════════════════════
-STEP 7: RESPOND WITH JSON ONLY
+STEP 8: RESPOND WITH JSON ONLY
 ═══════════════════════════════════════════════
 
 You MUST respond with ONLY a valid JSON object (no markdown, no explanation outside JSON):
 {
-  "image_category": "<'Competition' | 'Mirror Selfie' | 'Other'>",
+  "image_category": "<'Competition' | 'Mirror Selfie' | 'Screenshot' | 'Other'>",
   "ai_probability": <integer 0-100>,
   "verdict": "<'AI-Generated' | 'Likely AI-Generated' | 'Suspicious' | 'Likely Real' | 'Real'>",
   "confidence": "<'High' | 'Medium' | 'Low'>",
   "artifacts_detected": ["<specific artifact 1>", "<specific artifact 2>", ...],
-  "reasoning": "<3-4 sentence explanation referencing specific checks above>"
+  "reasoning": "<3-4 sentence explanation referencing specific checks above>",
+  "description": "<1-2 sentence neutral description of what the image shows, e.g. 'A young man taking a selfie in a bedroom mirror' or 'A soccer player in a white jersey on a field'>"
 }`;
 
         const GEMINI_MODELS = [
@@ -159,11 +169,12 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
 
         let response = null;
         let usedModel = null;
+        let currentKey = apiKey;
         for (const model of GEMINI_MODELS) {
             logger.info(`Sending image to Gemini model: ${model} (key index ${keyIndex - 1})...`);
             const startTime = Date.now();
             const r = await withRetry(() => fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`,
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -187,7 +198,9 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
 
             if (r.status === 503 || r.status === 429) {
                 const errBody = await r.text();
-                logger.warn(`Gemini model ${model} unavailable (${r.status}): ${errBody.slice(0, 150)} — trying next...`);
+                logger.warn(`Gemini model ${model} unavailable (${r.status}): ${errBody.slice(0, 150)} — trying next key...`);
+                currentKey = getNextGeminiKey();
+                if (!currentKey) break;
                 continue;
             }
 
@@ -220,7 +233,8 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
             confidence: parsed.confidence,
             imageCategory: parsed.image_category || 'Other',
             artifacts: parsed.artifacts_detected || [],
-            reasoning: parsed.reasoning || ''
+            reasoning: parsed.reasoning || '',
+            description: parsed.description || ''
         };
     } catch (err) {
         logger.warn('Gemini AI detection failed:', err.message);
