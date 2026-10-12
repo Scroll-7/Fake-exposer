@@ -152,13 +152,24 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
                 const localAiResult = await localApiRes.json();
                 if (localAiResult && localAiResult.fake_probability !== undefined) {
                     const fakeProb = Math.round(localAiResult.fake_probability * 100);
-                    if (localAiResult.is_fake) {
+                    const isFake = localAiResult.is_fake;
+                    // Confidence gate. The local classifier is a calibrated
+                    // TF-IDF model trained on 2016-era political news, so it is
+                    // out-of-distribution for modern/sports content. It may only
+                    // cap the score when it is genuinely confident; weak
+                    // predictions abstain instead of dragging real content down.
+                    // Calibration is measured in eval/report.py.
+                    const ML_CONFIDENCE_GATE = 0.8;
+                    if (isFake && localAiResult.fake_probability >= ML_CONFIDENCE_GATE) {
                         result.red_flags = result.red_flags || [];
                         result.red_flags.push(`🤖 Local ML Model predicts Fake News with ${fakeProb}% probability.`);
                         if (result.credibility_score > 50) {
                             result.credibility_score = 50;
                             result.verdict = 'Mixed / Disputed (Local ML Model flagged as Fake)';
                         }
+                    } else if (isFake) {
+                        result.red_flags = result.red_flags || [];
+                        result.red_flags.push(`🤖 Local ML Model leans Fake (${fakeProb}%) — below the ${Math.round(ML_CONFIDENCE_GATE * 100)}% confidence gate, not applied to score.`);
                     } else {
                         result.green_flags = result.green_flags || [];
                         result.green_flags.push(`✅ Local ML Model predicts Real News with ${Math.round(localAiResult.real_probability * 100)}% probability.`);
@@ -883,56 +894,6 @@ Be very specific and honest about uncertainty.`
                 green_flags: [],
                 summary: `AI detection model flagged this image: ${pct}% AI probability. ${llmResult.summary || ''}`.trim(),
             };
-        }
-
-        // ── LOCAL IMAGE CLASSIFIER (animal + human) ──
-        // Calls the ONNX model (cat | dog | humans | wild).
-        // • Human detected  → inject a deepfake/AI scrutiny warning into red_flags
-        //                     and note the classification in green_flags if score is already high
-        // • Animal detected → inject a green flag with the classification result
-        try {
-            const form = new FormData();
-            // Re-encode base64 to buffer to send as a file upload
-            const imageBuffer = Buffer.from(imageBase64, 'base64');
-            form.append('file', imageBuffer, { filename: 'image.jpg', contentType: mimeType });
-            const animalRes = await fetch('http://127.0.0.1:8001/predict_animal', {
-                method: 'POST',
-                body: form,
-                headers: form.getHeaders(),
-                signal: AbortSignal.timeout(5000)
-            });
-            if (animalRes.ok) {
-                const animalResult = await animalRes.json();
-                if (animalResult?.predicted_class && animalResult?.confidence > 0.5) {
-                    const pct = Math.round(animalResult.confidence * 100);
-
-                    if (animalResult.is_human) {
-                        // Human detected — flag for AI deepfake / body-enhancement scrutiny
-                        llmResult.red_flags = llmResult.red_flags || [];
-                        llmResult.red_flags.push(
-                            `🧠 Human Detector (${pct}% confidence): This image contains a person. ` +
-                            'AI deepfakes, face swaps, and body-enhancement edits are most common in ' +
-                            'human photos — scrutinise skin texture, lighting consistency, and edge artifacts carefully.'
-                        );
-
-                        // If the overall score is suspiciously high for a human photo, apply a light penalty
-                        if ((llmResult.credibility_score ?? 100) > 70 && !aiOverride) {
-                            const humanPenalty = Math.round((pct / 100) * 10); // up to -10 pts
-                            llmResult.credibility_score = Math.max(30, (llmResult.credibility_score ?? 80) - humanPenalty);
-                            llmResult.summary = (llmResult.summary || '') +
-                                ` [Human Classifier applied a ${humanPenalty}-pt AI-scrutiny adjustment.]`;
-                        }
-                    } else {
-                        // Animal detected — positive signal (real animals are rarely deepfaked)
-                        llmResult.green_flags = llmResult.green_flags || [];
-                        llmResult.green_flags.push(
-                            `🐾 Image Classifier: Detected a "${animalResult.predicted_class}" with ${pct}% confidence.`
-                        );
-                    }
-                }
-            }
-        } catch {
-            logger.warn('Image classifier API not reachable, skipping...');
         }
 
         return llmResult;

@@ -48,7 +48,7 @@ echo.
 
 :: Single npm start — Python APIs are NOT auto-spawned.
 :: Start them manually in separate terminals if desired:
-::   python python_api.py / animal_api.py / face_api.py
+::   python python_api.py / image_api.py / face_api.py
 npm start
 
 :: If npm start exits, pause so user can see the error

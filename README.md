@@ -19,6 +19,7 @@ It combines frontier LLMs (Groq LLaMA 4 vision, Google Gemini), three local Pyth
 - [Project structure](#project-structure)
 - [Security](#security)
 - [Testing](#testing)
+- [Model evaluation](#model-evaluation)
 - [Extending](#extending)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -47,7 +48,7 @@ This project attacks that specific failure mode with three things a single LLM c
 | **ZeroGPT-style text detector** | 7-metric local statistical AI-text detector. **No API key, no network, no cost.** |
 | **Face ID** | InsightFace recognition of 32 known public figures, wired into a jersey-mismatch knowledge base. |
 | **Celebrity context** | Known roles, organizations, and typical settings for each public figure, to flag out-of-context imagery. |
-| **Local AI-image classifier** | ONNX model scores image-level AI probability, merged as an override on the final score. |
+| **Local AI-image detector** | A pretrained ONNX classifier (Nonescape Mini v0) scores image-level AI probability, merged into the final verdict. |
 | **Trusted-source boost** | Verified/prominent sources (Reuters, BBC, Sky Sports, …) receive a documented +50 credibility boost. |
 | **Multi-provider fallback** | 3 Groq vision models + 4 Gemini models with API-key rotation, so one provider being down or rate-limited doesn't break analysis. |
 
@@ -123,8 +124,7 @@ Groq LLaMA 4    Gemini       sportsKB.js                  no network
 vision + text   image forensics (player↔club KB)
     │
     ├──▶ http://127.0.0.1:8000/predict          (python_api.py — TF-IDF + LogReg)
-    ├──▶ http://127.0.0.1:8001/detect_ai        (animal_api.py — ONNX AI detector)
-    ├──▶ http://127.0.0.1:8001/predict_animal   (animal_api.py — image classifier)
+    ├──▶ http://127.0.0.1:8001/detect_ai        (image_api.py — Nonescape AI detector)
     └──▶ http://127.0.0.1:8002/recognize        (face_api.py  — InsightFace)
 
     ┌──────────────────────────────────────────────────────────┐
@@ -190,8 +190,8 @@ The server **degrades gracefully** without these — every feature that depends 
 ```bash
 pip install -r requirements.txt
 
-python python_api.py     # :8000  ML text classification (TF-IDF + Logistic Regression)
-python animal_api.py     # :8001  ONNX AI-image detection + image classification
+python python_api.py     # :8000  ML text classification (calibrated TF-IDF + Logistic Regression)
+python image_api.py      # :8001  Nonescape ONNX AI-image detection
 python face_api.py       # :8002  InsightFace face recognition
 ```
 
@@ -303,9 +303,11 @@ Returns Face API availability and the list of recognizable identities. Never fai
 │   ├── scraper.js             # Jina/DDG search + URL scrape (SSRF-guarded)
 │   ├── retry.js               # Exponential backoff helper
 │   └── logger.js              # Structured ISO-timestamped logging
-├── python_api.py              # :8000  TF-IDF + Logistic Regression text classifier
-├── animal_api.py              # :8001  ONNX AI detection + image classifier
+├── python_api.py              # :8000  calibrated TF-IDF + Logistic Regression text classifier
+├── image_api.py               # :8001  Nonescape ONNX AI-image detection
 ├── face_api.py                # :8002  InsightFace recognition
+├── auto_train.py              # Trains the text model (leak-free + calibrated)
+├── eval/                      # Evaluation harness (dedupe, split, metrics, report)
 ├── known_faces/               # Reference photos (firstname_lastname.jpg)
 ├── public/                    # Frontend (no build step)
 ├── test/                      # node:test suites + Playwright E2E
@@ -342,6 +344,34 @@ npm run test:e2e  # Playwright (requires a running server)
 Current suite covers: heuristics (physique/portrait/filename), the sports knowledge base, scraper fallbacks, the SSRF guard, text detection, Groq error paths, and Express integration (upload validation, rate limits, error handling).
 
 CI runs lint + tests on every push and PR to `main` (`.github/workflows/ci.yml`).
+
+---
+
+## Model evaluation
+
+The local text model is trained and evaluated through an honest, leak-free harness in `eval/`. The original trainer reported a single accuracy number on a random split taken **before** deduplication; because WELFake is a concatenation of several corpora full of near-duplicates, that number was inflated by leakage rather than generalisation.
+
+```bash
+# Evaluate the shipped model on a leak-free split
+python -m eval.report --data WELFake_Dataset.csv \
+    --model fake_news_model.pkl --vectorizer fake_news_vectorizer.pkl
+
+# Retrain through the corrected pipeline (dedup + group split + calibration)
+python auto_train.py --force
+
+# Harness self-tests (no dataset needed)
+python -m unittest eval.test_eval -v
+```
+
+What the harness enforces:
+
+- **Deduplication before splitting** — exact + (with `datasketch`) near-duplicate clustering.
+- **Group split** — a whole duplicate cluster never spans train/test.
+- **Full metric panel** — macro-F1, precision/recall, ROC-AUC, PR-AUC, Brier score, Expected Calibration Error, confusion matrix.
+- **Train/val gap** — the honest over/under-fitting signal.
+- **Model card** — `fake_news_model.card.json` records the label map, dedup stats, split seed, and measured metrics.
+
+> **Reality check.** WELFake is 2016–2018 US political news. The text model does **not** generalise to modern sports or multimodal content, and its predictive tokens are dominated by source/formatting artifacts (CMS markers, outlet bylines). It is treated as a **weak, calibrated signal** only: it can cap a score at 50 **only** when its calibrated fake-probability is ≥ 0.8, and otherwise abstains. The detection quality of this project comes from the LLM calls and the deterministic heuristics, not from this classifier.
 
 ---
 

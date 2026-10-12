@@ -31,8 +31,8 @@ server.js (433 lines)
 │   ├── retry.js         (29 lines)   — Exponential backoff utility
 │   └── logger.js        (17 lines)   — Structured logging (ISO ts + 4 levels)
 ├── python APIs (optional — run manually, not auto-spawned):
-│   ├── python_api.py    (60 lines)   — Text classification (TF-IDF + LR)
-│   ├── animal_api.py    (132 lines)  — Image classification + AI detection
+│   ├── python_api.py    (60 lines)   — Text classification (calibrated TF-IDF + LR)
+│   ├── image_api.py     (~90 lines)  — Nonescape ONNX AI-image detection
 │   └── face_api.py      (114 lines)  — InsightFace recognition
 ├── test/
 │   ├── heuristics.test.js  — 11 tests
@@ -88,7 +88,7 @@ POST /api/analyze/image (multipart: file + optional context)
   ├─ POST-STEP-3: Re-check jersey mismatch on LLM output + userContext
   ├─ MERGE: AI override, Nonescape cap (40 if >65%), jersey mismatch cap,
   │         heuristic caps, unverifiable cap, portrait penalty
-  ├─ Image classifier (port 8001 /predict_animal) → context boost
+  ├─ ML confidence gate: local text model caps at 50 only when calibrated p(fake) ≥ 0.8
   ├─ Cleanup: delete temp file
   └─ applyTrustedBoost() → response
 ```
@@ -137,8 +137,8 @@ POST /api/detect/text { text }
      +----------------+              +------------------+  +--------------+
      | FastAPI        |              | FastAPI          |  | FastAPI      |
      | port 8000      |              | port 8001        |  | port 8002    |
-     | TF-IDF+LR      |              | ONNX MobileNet   |  | InsightFace  |
-     | /predict       |              | /predict_animal  |  | /recognize   |
+     | TF-IDF+LR      |              | ONNX Nonescape   |  | InsightFace  |
+     | /predict       |              | /detect_ai       |  | /recognize   |
      | /health        |              | /detect_ai       |  | /health      |
      +----------------+              +------------------+  +--------------+
                                                |

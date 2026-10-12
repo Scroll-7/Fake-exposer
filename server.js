@@ -420,8 +420,8 @@ function startServer(port) {
     });
 }
 
-// Python ML services (face_api.py, animal_api.py, python_api.py) are NOT auto-spawned.
-// Run them manually if needed: python services/face_api.py, etc.
+// Python ML services (face_api.py, image_api.py, python_api.py) are NOT auto-spawned.
+// Run them manually if needed: python face_api.py, etc.
 
 // Only start when run directly (not imported as a module)
 // Decode URL-encoded path (e.g., %20 for spaces on Windows) before comparing
