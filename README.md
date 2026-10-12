@@ -349,7 +349,9 @@ CI runs lint + tests on every push and PR to `main` (`.github/workflows/ci.yml`)
 
 ## Model evaluation
 
-The local text model is trained and evaluated through an honest, leak-free harness in `eval/`. The original trainer reported a single accuracy number on a random split taken **before** deduplication; because WELFake is a concatenation of several corpora full of near-duplicates, that number was inflated by leakage rather than generalisation.
+The local text model is trained and evaluated through an honest, leak-free harness in `eval/`. The original trainer reported a single accuracy number on a random split taken **before** deduplication. Deduplication removes **13.5%** of WELFake as exact/near-duplicates, so that split was leaky.
+
+Measuring it properly ([full report](docs/eval-welfake.md)) partly *refuted* the obvious hypothesis: leakage did **not** inflate the headline accuracy — the old ~95% is real (the corrected pipeline scores 0.955 macro-F1 vs 0.948 legacy). The genuine defect was **probability calibration**: Expected Calibration Error fell from **5.3%** to **0.8%**. That is what matters for a system that thresholds a fake/real score.
 
 ```bash
 # Evaluate the shipped model on a leak-free split

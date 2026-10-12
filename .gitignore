@@ -19,6 +19,7 @@ image_cache.json
 
 # Logs
 *.log
+*.pid
 
 # Playwright artifacts
 test-results/
