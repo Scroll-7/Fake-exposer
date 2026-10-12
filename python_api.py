@@ -1,9 +1,23 @@
+import json
+import pickle
+
 from fastapi import FastAPI
 from pydantic import BaseModel
-import pickle
-import sys
 
 app = FastAPI(title="Fake News Detection API")
+
+# Default assumption if no model card is present. The trainer writes a card
+# (fake_news_model.card.json) recording the real/fake label indices, so the API
+# never has to guess — a silent real/fake inversion was a real risk before.
+LABEL_MAP = {"real": 0, "fake": 1}
+CARD_PATH = "fake_news_model.card.json"
+
+try:
+    with open(CARD_PATH, encoding="utf-8") as f:
+        LABEL_MAP = json.load(f).get("label_map", LABEL_MAP)
+    print(f"Loaded model card label_map: {LABEL_MAP}")
+except Exception:
+    print(f"No model card ({CARD_PATH}); assuming label_map {LABEL_MAP}")
 
 # Load model and vectorizer
 try:
@@ -18,41 +32,40 @@ except Exception as e:
     model = None
     vectorizer = None
 
+
 class PredictRequest(BaseModel):
     text: str
+
 
 class PredictResponse(BaseModel):
     is_fake: bool
     fake_probability: float
     real_probability: float
 
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model_loaded": model is not None and vectorizer is not None}
+
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(request: PredictRequest):
     if not model or not vectorizer:
         return {"error": "Model not loaded. Please train the model first."}
-        
-    text = request.text
-    # Transform text
-    X = vectorizer.transform([text])
-    
-    # Predict (assumes model classes are [0, 1])
-    # For WELFake, typically 1 = Fake, 0 = Real
+
+    X = vectorizer.transform([request.text])
     probabilities = model.predict_proba(X)[0]
-    
-    # Depending on how the labels mapped. Usually proba[0] is class 0, proba[1] is class 1.
-    # We will assume class 1 is Fake for this dataset.
-    real_prob = float(probabilities[0])
-    fake_prob = float(probabilities[1]) if len(probabilities) > 1 else 0.0
-    
+    prob_by_class = dict(zip(list(model.classes_), probabilities))
+
+    fake_prob = float(prob_by_class.get(LABEL_MAP["fake"], 0.0))
+    real_prob = float(prob_by_class.get(LABEL_MAP["real"], 0.0))
+
     return PredictResponse(
         is_fake=bool(fake_prob > 0.5),
         fake_probability=fake_prob,
-        real_probability=real_prob
+        real_probability=real_prob,
     )
+
 
 if __name__ == "__main__":
     import uvicorn

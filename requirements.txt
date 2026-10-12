@@ -1,12 +1,23 @@
+# ── Text ML API (python_api.py) ──────────────────────────────────────────────
 fastapi>=0.138.0
 uvicorn>=0.49.0
 pydantic>=2.12.5
 scikit-learn>=1.8.0
 pandas>=3.0.3
 numpy>=2.4.2
+
+# ── Image ML API (image_api.py) ──────────────────────────────────────────────
 onnxruntime>=1.27.0
 pillow>=12.2.0
+
+# ── Face ID API (face_api.py) ────────────────────────────────────────────────
 opencv-python>=4.13.0
 insightface>=1.0.1
-torch>=2.12.1
-torchvision>=0.27.1
+
+# ── Evaluation / training (eval/, auto_train.py) ─────────────────────────────
+# near-duplicate detection for leak-free splits
+datasketch>=1.6.5
+
+# Note: torch / torchvision were removed — they were only used by the deleted
+# animal-image training path. Local AI-image detection uses the pretrained
+# Nonescape ONNX model instead.
