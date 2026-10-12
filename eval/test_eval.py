@@ -37,6 +37,19 @@ class TestDedupe(unittest.TestCase):
         self.assertEqual(labels[0], labels[1])
         self.assertNotEqual(labels[0], labels[2])
 
+    def test_near_duplicates_share_cluster(self):
+        # One changed word in a 60-word doc => Jaccard ~0.84 (above 0.8).
+        base = " ".join(f"token{i}" for i in range(60))
+        near = base.replace("token30", "tokenXX")
+        labels, ran = cluster_texts(
+            [base, near, "unrelated sentence about weather and football"],
+            threshold=0.8,
+        )
+        if not ran:
+            self.skipTest("datasketch not installed")
+        self.assertEqual(labels[0], labels[1])
+        self.assertNotEqual(labels[0], labels[2])
+
     def test_cluster_stats(self):
         texts = ["a", "a", "b", "c", "c", "c"]
         labels, _ = cluster_texts(texts)

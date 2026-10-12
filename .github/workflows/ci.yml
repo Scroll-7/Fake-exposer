@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  node:
+    name: Node tests + lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,6 +17,22 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm test
         env:
+          # Tests intentionally run without API keys: groq.test.js asserts the
+          # missing-key error paths, and the rest use a random free port.
           NODE_OPTIONS: --experimental-test-coverage
+
+  python-eval:
+    name: Eval harness self-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install eval dependencies
+        run: pip install numpy scikit-learn datasketch
+      - name: Run harness self-tests (no dataset required)
+        run: python -m unittest eval.test_eval -v
