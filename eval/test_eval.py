@@ -11,7 +11,11 @@ import unittest
 import numpy as np
 
 from eval.dedupe import cluster_stats, cluster_texts, content_hash, normalize
-from eval.metrics import classification_report_dict, expected_calibration_error
+from eval.metrics import (
+    best_threshold,
+    classification_report_dict,
+    expected_calibration_error,
+)
 from eval.split import assert_no_cluster_leak, group_stratified_split
 
 
@@ -78,6 +82,51 @@ class TestMetrics(unittest.TestCase):
         pred = [0, 0, 1, 1]
         rep = classification_report_dict(y, pred)
         self.assertEqual(np.array(rep["confusion_matrix"]).shape, (2, 2))
+
+    def test_best_threshold_finds_separable_split(self):
+        # Real ~0.1, fake ~0.9 => any threshold in between is perfect.
+        y = [0, 0, 0, 1, 1, 1]
+        prob = [0.1, 0.15, 0.2, 0.8, 0.85, 0.9]
+        t, f1 = best_threshold(y, prob)
+        self.assertGreater(f1, 0.99)
+        self.assertTrue(0.2 < t < 0.8)
+
+
+class TestManifest(unittest.TestCase):
+    def _write(self, text):
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def test_valid_manifest_parses(self):
+        from eval.pipeline_eval import load_manifest
+
+        path = self._write(
+            '{"id":"a","type":"text","input":"hi","label":1}\n'
+            "\n"
+            "# a comment line\n"
+            '{"id":"b","type":"image","input":"x.jpg","label":0}\n'
+        )
+        items = load_manifest(path)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["label"], 1)
+
+    def test_invalid_type_rejected(self):
+        from eval.pipeline_eval import load_manifest
+
+        path = self._write('{"id":"a","type":"audio","input":"x","label":1}\n')
+        with self.assertRaises(SystemExit):
+            load_manifest(path)
+
+    def test_missing_label_rejected(self):
+        from eval.pipeline_eval import load_manifest
+
+        path = self._write('{"id":"a","type":"text","input":"x"}\n')
+        with self.assertRaises(SystemExit):
+            load_manifest(path)
 
 
 if __name__ == "__main__":

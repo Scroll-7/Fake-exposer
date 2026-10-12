@@ -104,6 +104,19 @@ def train_val_gap(train_acc: float, val_acc: float) -> float:
     return float(train_acc - val_acc)
 
 
+def best_threshold(y_true, y_prob, n_steps: int = 19) -> tuple[float, float]:
+    """Sweep decision thresholds and return (threshold, f1_macro) at the best F1."""
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob, dtype=float)
+    best_t, best_f = 0.5, -1.0
+    for t in np.linspace(0.05, 0.95, n_steps):
+        pred = (y_prob >= t).astype(int)
+        f = f1_score(y_true, pred, average="macro", zero_division=0)
+        if f > best_f:
+            best_t, best_f = float(t), float(f)
+    return best_t, best_f
+
+
 def format_report(name: str, report: dict) -> str:
     """Human-readable block for the CLI."""
     cm = report.get("confusion_matrix") or [[0, 0], [0, 0]]

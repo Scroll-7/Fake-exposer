@@ -1,0 +1,9 @@
+# Pipeline evaluation manifests.
+# One JSON object per line. label: 1 = fake/AI/manipulated, 0 = real/authentic.
+# NOTE: these seed items are illustrative starting points, NOT a vetted test set.
+#       Replace them with sourced, hand-labelled examples before trusting any
+#       number produced from this file.
+{"id": "seed-real-1", "type": "text", "input": "The central bank raised its benchmark interest rate by 25 basis points on Thursday, citing persistent inflation. In a statement, the committee said it would monitor incoming data before deciding on further adjustments.", "label": 0, "source": "seed-unverified", "notes": "formal wire-style reporting"}
+{"id": "seed-real-2", "type": "text", "input": "A spokesperson for the ministry said the survey covered roughly 12,000 households across five provinces and that the full dataset would be published next month.", "label": 0, "source": "seed-unverified", "notes": "attributed, specific"}
+{"id": "seed-fake-1", "type": "text", "input": "BREAKING: Watch the shocking video the mainstream media refuses to show you! Doctors are BANNED from revealing this one secret. Share before it gets deleted!!!", "label": 1, "source": "seed-unverified", "notes": "engagement-bait template"}
+{"id": "seed-fake-2", "type": "text", "input": "You won't believe what this celebrity did. The entire internet is stunned. Click to see the image they don't want you to see.", "label": 1, "source": "seed-unverified", "notes": "clickbait template"}
