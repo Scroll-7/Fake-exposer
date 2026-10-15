@@ -85,6 +85,50 @@ describe('applyLocalMlSignal (ML confidence gate)', () => {
     });
 });
 
+describe('nonescapeAdvisory (weak-signal wrapper)', () => {
+    it('returns an empty advisory for missing/invalid probabilities', async () => {
+        const { nonescapeAdvisory } = await import('../services/groq.js');
+        for (const v of [undefined, null, NaN]) {
+            const a = nonescapeAdvisory(v);
+            assert.equal(a.level, null);
+            assert.equal(a.note, '');
+            assert.equal(a.redFlag, '');
+        }
+    });
+
+    it('marks >0.7 as high but frames it as a weak signal (no hard verdict)', async () => {
+        const { nonescapeAdvisory } = await import('../services/groq.js');
+        const a = nonescapeAdvisory(0.98);
+        assert.equal(a.level, 'high');
+        assert.match(a.note, /weak, low-confidence signal/);
+        assert.match(a.redFlag, /not a hard verdict/);
+    });
+
+    it('marks 0.5-0.7 as moderate with no red flag', async () => {
+        const { nonescapeAdvisory } = await import('../services/groq.js');
+        const a = nonescapeAdvisory(0.6);
+        assert.equal(a.level, 'moderate');
+        assert.equal(a.redFlag, '');
+        assert.match(a.note, /weak signal/);
+    });
+
+    it('marks <0.3 as pass', async () => {
+        const { nonescapeAdvisory } = await import('../services/groq.js');
+        const a = nonescapeAdvisory(0.05);
+        assert.equal(a.level, 'pass');
+        assert.match(a.note, /nothing suspicious/);
+        assert.equal(a.redFlag, '');
+    });
+
+    it('returns a neutral advisory in the 0.3-0.5 ambiguous band', async () => {
+        const { nonescapeAdvisory } = await import('../services/groq.js');
+        const a = nonescapeAdvisory(0.4);
+        assert.equal(a.level, null);
+        assert.equal(a.note, '');
+        assert.equal(a.redFlag, '');
+    });
+});
+
 describe('extractTrustedSource', () => {
     let extractTrustedSource;
     before(async () => {

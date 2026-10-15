@@ -69,7 +69,10 @@ reproducible, committed version.
 ## Recommendation
 
 Do **not** surface the Nonescape probability as a confident "AI-generated"
-verdict. Either (a) keep it as one weak signal behind the existing gate, with
-the UI framing it as low-confidence, or (b) replace it. Any replacement should
-be re-measured on the sports-realistic set described in `eval/README.md`, not
-on CIFAKE alone.
+verdict. This is now enforced in code: the local model is **advisory only**
+(`nonescapeAdvisory()` in `services/groq.js`) — it contributes a *weak-signal*
+note and, at most, a red flag, but no longer hard-caps the score or overrides
+the LLM verdict. The previous `>0.65 → cap score to 30` rule was removed because
+it fired on **~98% of real images** in this benchmark. Any replacement model
+should be re-measured on the sports-realistic set described in `eval/README.md`,
+not on CIFAKE alone.

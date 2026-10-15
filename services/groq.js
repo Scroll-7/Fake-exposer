@@ -91,6 +91,46 @@ export function applyLocalMlSignal(result, ml, gate = ML_CONFIDENCE_GATE) {
     return result;
 }
 
+/**
+ * Advisory wrapper for the local Nonescape image model.
+ *
+ * That model is a weak, low-confidence signal: measured on CIFAKE it is near
+ * chance (ROC-AUC 0.63), flags ~98% of *real* images as AI, and its verdict
+ * flips with input domain. So it is advisory only — it must never hard-cap the
+ * score or override the LLM verdict. See docs/eval-image.md.
+ *
+ * Pure and exported for unit testing. Returns `{ level, note, redFlag }`.
+ */
+export function nonescapeAdvisory(prob) {
+    const empty = { level: null, note: '', redFlag: '' };
+    if (prob === undefined || prob === null || Number.isNaN(prob)) return empty;
+    const pct = Math.round(prob * 100);
+    const caveat =
+        'This is a weak, low-confidence signal (the local model is biased toward "AI" and unreliable off its training distribution) — treat it as supporting evidence only, not proof.';
+    if (prob > 0.7) {
+        return {
+            level: 'high',
+            note: `\n⚠️ LOCAL AI-IMAGE MODEL (weak signal): ${pct}% AI probability. ${caveat}`,
+            redFlag: `🤖 Local AI-image model: ${pct}% AI probability (weak signal — not a hard verdict)`,
+        };
+    }
+    if (prob > 0.5) {
+        return {
+            level: 'moderate',
+            note: `\n⚠️ LOCAL AI-IMAGE MODEL (weak signal): ${pct}% AI probability. ${caveat}`,
+            redFlag: '',
+        };
+    }
+    if (prob < 0.3) {
+        return {
+            level: 'pass',
+            note: `\n✅ LOCAL AI-IMAGE MODEL (weak signal): only ${pct}% AI probability — the model sees nothing suspicious.`,
+            redFlag: '',
+        };
+    }
+    return empty;
+}
+
 export async function analyzeContent(text) {
     if (!process.env.GROQ_API_KEY) {
         throw new Error('GROQ_API_KEY is not configured. Set it in .env to enable text analysis.');
@@ -419,19 +459,10 @@ Be very specific and honest about uncertainty.`
     // Compute AI override from Gemini result (instant, local)
     const aiOverride = computeAiOverride(aiDetection);
 
-    // Nonescape local ONNX model result — complementary AI detection
+    // Nonescape local ONNX model result — advisory only (see nonescapeAdvisory).
     const nonescapeAiProb = nonescapeResult?.ai_probability;
-    let nonescapeNote = '';
-    if (nonescapeAiProb !== undefined) {
-        const pct = Math.round(nonescapeAiProb * 100);
-        if (nonescapeAiProb > 0.7) {
-            nonescapeNote = `\n⚠️ AUTOMATIC AI DETECTION MODEL: ${pct}% probability this image is AI-generated (local ONNX classifier). This is a STRONG signal. Score should be 30 or lower.`;
-        } else if (nonescapeAiProb > 0.5) {
-            nonescapeNote = `\n⚠️ AUTOMATIC AI DETECTION MODEL: ${pct}% probability this image is AI-generated (local ONNX classifier). This is a MODERATE signal. Treat with suspicion.`;
-        } else if (nonescapeAiProb < 0.3) {
-            nonescapeNote = `\n✅ AUTOMATIC AI DETECTION MODEL: Only ${pct}% probability of AI generation (local ONNX classifier). The image passes the model-based detector.`;
-        }
-    }
+    const nonescapeInfo = nonescapeAdvisory(nonescapeAiProb);
+    const nonescapeNote = nonescapeInfo.note;
 
     // Build face ID context for Step 3 (no longer modifying userContext in-place)
     const faceIdContext = faceIdOverride
@@ -887,23 +918,10 @@ Be very specific and honest about uncertainty.`
             };
         }
 
-        // ── NONESCAPE LOCAL AI DETECTION CAP ──
-        if (nonescapeAiProb !== undefined && nonescapeAiProb > 0.65 && (llmResult.credibility_score ?? 100) > 40) {
-            const cappedScore = 30;
-            const pct = Math.round(nonescapeAiProb * 100);
-            logger.warn(`Nonescape AI cap: ${pct}% AI prob — score ${llmResult.credibility_score} → ${cappedScore}`);
-            return {
-                ...llmResult,
-                credibility_score: cappedScore,
-                verdict: 'Likely AI-Generated (ML Detector)',
-                red_flags: [
-                    `🤖 Local AI Detection Model: ${pct}% probability of AI generation (Nonescape ONNX classifier)`,
-                    ...(llmResult.red_flags || []),
-                ],
-                green_flags: [],
-                summary: `AI detection model flagged this image: ${pct}% AI probability. ${llmResult.summary || ''}`.trim(),
-            };
-        }
+        // The Nonescape hard cap was deliberately removed. The model is near
+        // chance on out-of-distribution images (CIFAKE ROC-AUC 0.63) and flags
+        // ~98% of real images as AI, so it is advisory only and must not
+        // override the LLM verdict. See nonescapeAdvisory() and docs/eval-image.md.
 
         return llmResult;
     } catch (error) {
@@ -1025,10 +1043,10 @@ Be very specific and honest about uncertainty.`
                 fallback.green_flags.push('📸 Gemini classified this as a screenshot — a capture of real content, not AI-generated');
             }
 
-            // Inject Nonescape model result
-            if (nonescapeAiProb !== undefined && nonescapeAiProb > 0.5) {
-                fallback.red_flags.push(`🤖 Local AI Detection Model: ${Math.round(nonescapeAiProb * 100)}% AI probability`);
-                fallback.credibility_score = Math.min(fallback.credibility_score, 30);
+            // Inject Nonescape model result (advisory only — never caps the score;
+            // the model is unreliable off-distribution, see docs/eval-image.md)
+            if (nonescapeInfo.redFlag) {
+                fallback.red_flags.push(nonescapeInfo.redFlag);
             }
 
             // Face identification
