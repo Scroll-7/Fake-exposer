@@ -95,9 +95,10 @@ export function applyLocalMlSignal(result, ml, gate = ML_CONFIDENCE_GATE) {
  * Advisory wrapper for the local Nonescape image model.
  *
  * That model is a weak, low-confidence signal: measured on CIFAKE it is near
- * chance (ROC-AUC 0.63), flags ~98% of *real* images as AI, and its verdict
- * flips with input domain. So it is advisory only — it must never hard-cap the
- * score or override the LLM verdict. See docs/eval-image.md.
+ * chance (ROC-AUC 0.63), flags most *real* images as AI (97% above 0.5, 67%
+ * above 0.65), and its verdict flips with input domain. So it is advisory only
+ * — it must never hard-cap the score or override the LLM verdict. See
+ * docs/eval-image.md.
  *
  * Pure and exported for unit testing. Returns `{ level, note, redFlag }`.
  */
@@ -920,8 +921,9 @@ Be very specific and honest about uncertainty.`
 
         // The Nonescape hard cap was deliberately removed. The model is near
         // chance on out-of-distribution images (CIFAKE ROC-AUC 0.63) and flags
-        // ~98% of real images as AI, so it is advisory only and must not
-        // override the LLM verdict. See nonescapeAdvisory() and docs/eval-image.md.
+        // most real images as AI (97% above 0.5, 67% above 0.65), so it is
+        // advisory only and must not override the LLM verdict. See
+        // nonescapeAdvisory() and docs/eval-image.md.
 
         return llmResult;
     } catch (error) {

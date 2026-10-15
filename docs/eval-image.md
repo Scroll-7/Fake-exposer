@@ -73,6 +73,6 @@ verdict. This is now enforced in code: the local model is **advisory only**
 (`nonescapeAdvisory()` in `services/groq.js`) — it contributes a *weak-signal*
 note and, at most, a red flag, but no longer hard-caps the score or overrides
 the LLM verdict. The previous `>0.65 → cap score to 30` rule was removed because
-it fired on **~98% of real images** in this benchmark. Any replacement model
-should be re-measured on the sports-realistic set described in `eval/README.md`,
-not on CIFAKE alone.
+it fired on **~67% of real images** in this benchmark (and the `>0.5` fallback
+cap fired on ~97%). Any replacement model should be re-measured on the
+sports-realistic set described in `eval/README.md`, not on CIFAKE alone.
