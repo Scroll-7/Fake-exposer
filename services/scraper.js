@@ -3,7 +3,7 @@ import { logger } from './logger.js';
 import net from 'net';
 import { lookup } from 'dns/promises';
 
-function cleanHtml(text) {
+export function cleanHtml(text) {
     return text
         .replace(/<[^>]+>/g, '')
         .replace(/&quot;/g, '"')
@@ -16,7 +16,7 @@ function cleanHtml(text) {
         .trim();
 }
 
-function extractSnippets(html) {
+export function extractSnippets(html) {
     const patterns = [
         /<a[^>]*class="result__snippet[^"]*"[^>]*>(.*?)<\/a>/gi,
         /<span[^>]*class="result__snippet[^"]*"[^>]*>(.*?)<\/span>/gi,
@@ -98,7 +98,7 @@ async function tryQuery(query) {
 
 const STOP_WORDS = new Set(['the', 'a', 'an', 'is', 'it', 'was', 'to', 'in', 'for', 'of', 'on', 'at', 'by', 'with', 'and', 'or', 'but', 'not', 'are', 'were', 'has', 'had', 'have', 'been', 'its', 'this', 'that', 'from', 's']);
 
-function extractKeyTerms(text) {
+export function extractKeyTerms(text) {
     const cleaned = text.replace(/[^a-zA-Z\s]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
     const words = cleaned.split(' ').filter(w => w.length > 2 && !STOP_WORDS.has(w));
     return words.slice(0, 6).join(' ');
@@ -126,7 +126,7 @@ export async function searchWeb(query) {
     return 'Search engines could not find relevant web results for this query. This does not mean the claim is false — only that no matching pages were found online. Fact-check based on general knowledge and internal reasoning.';
 }
 
-function extractMetaContent(html, property) {
+export function extractMetaContent(html, property) {
     const patterns = [
         new RegExp(`<meta[^>]+property="${property}"[^>]+content="([^"]*)"`, 'i'),
         new RegExp(`<meta[^>]+name="${property}"[^>]+content="([^"]*)"`, 'i'),
@@ -140,7 +140,7 @@ function extractMetaContent(html, property) {
     return null;
 }
 
-function extractBodyText(html) {
+export function extractBodyText(html) {
     const body = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
     if (!body) return null;
     const text = body[1]

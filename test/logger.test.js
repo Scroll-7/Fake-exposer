@@ -69,3 +69,45 @@ describe('logger', () => {
         assert.strictEqual(output, '');
     });
 });
+
+describe('logger serialization', () => {
+    let logger;
+
+    before(async () => {
+        logger = (await import('../services/logger.js')).logger;
+    });
+
+    function capture(stream, fn) {
+        let output = '';
+        const orig = stream.write;
+        stream.write = (chunk) => { output += chunk; return true; };
+        try {
+            fn();
+        } finally {
+            stream.write = orig;
+        }
+        return output;
+    }
+
+    it('serialises plain objects as JSON', () => {
+        const output = capture(process.stdout, () => logger.info({ a: 1, b: 'x' }));
+        assert.match(output, /\{"a":1,"b":"x"\}/);
+    });
+
+    it('serialises Error instances via message', () => {
+        const output = capture(process.stdout, () => logger.info(new Error('kaboom')));
+        assert.ok(output.includes('kaboom'));
+    });
+
+    it('falls back to String() for circular objects', () => {
+        const circular = {};
+        circular.self = circular;
+        const output = capture(process.stdout, () => logger.info(circular));
+        assert.ok(output.includes('[object Object]'));
+    });
+
+    it('joins multiple arguments with spaces', () => {
+        const output = capture(process.stdout, () => logger.info('a', 'b', 3));
+        assert.ok(output.includes('a b 3'));
+    });
+});

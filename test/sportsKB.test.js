@@ -18,6 +18,10 @@ describe('detectJerseyMismatch', () => {
         assert.equal(result, null);
     });
 
+    it('returns null when a player is named but no team is present', () => {
+        assert.equal(detectJerseyMismatch('A close-up photo of Neymar smiling at the camera'), null);
+    });
+
     it('detects valid player-club combo (Messi + Barcelona)', () => {
         const result = detectJerseyMismatch('The image shows Lionel Messi wearing a Barcelona jersey');
         assert.equal(result, null);

@@ -1,6 +1,6 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { searchWeb, scrapeUrl, validatePublicUrl, isPrivateIp } from '../services/scraper.js';
+import { searchWeb, scrapeUrl, validatePublicUrl, isPrivateIp, cleanHtml, extractSnippets, extractKeyTerms, extractMetaContent, extractBodyText } from '../services/scraper.js';
 
 describe('searchWeb', () => {
     it('returns fallback message when fetch fails', async () => {
@@ -134,5 +134,102 @@ describe('SSRF guard (validatePublicUrl / isPrivateIp)', () => {
             () => scrapeUrl('ftp://example.com/file'),
             /Could not extract text/
         );
+    });
+
+    it('flags additional reserved and mapped ranges', () => {
+        assert.equal(isPrivateIp('0.0.0.1'), true);
+        assert.equal(isPrivateIp('100.64.0.1'), true);   // CGNAT lower bound
+        assert.equal(isPrivateIp('100.127.255.255'), true); // CGNAT upper bound
+        assert.equal(isPrivateIp('::ffff:127.0.0.1'), true);
+        assert.equal(isPrivateIp('fc00::1'), true);      // unique local
+        assert.equal(isPrivateIp('fd12:3456::1'), true); // unique local
+    });
+
+    it('allows addresses just outside private ranges', () => {
+        assert.equal(isPrivateIp('100.63.0.1'), false);
+        assert.equal(isPrivateIp('100.128.0.0'), false);
+        assert.equal(isPrivateIp('172.15.0.1'), false);
+        assert.equal(isPrivateIp('172.32.0.1'), false);
+        assert.equal(isPrivateIp('::ffff:8.8.8.8'), false);
+        assert.equal(isPrivateIp('2001:4860:4860::8888'), false);
+    });
+
+    it('fails closed for unrecognised input', () => {
+        assert.equal(isPrivateIp('not-an-ip'), true);
+        assert.equal(isPrivateIp(''), true);
+    });
+});
+
+describe('cleanHtml', () => {
+    it('strips tags and collapses whitespace', () => {
+        assert.equal(cleanHtml('<p>Hello   <b>world</b></p>'), 'Hello world');
+        assert.equal(cleanHtml('  a\n\n  b  '), 'a b');
+    });
+
+    it('decodes common HTML entities', () => {
+        assert.equal(cleanHtml('&quot;q&quot; &amp; &#39;a&#39; &lt;x&gt;'), '"q" & \'a\' <x>');
+    });
+});
+
+describe('extractSnippets', () => {
+    it('returns [] for empty or non-matching HTML', () => {
+        assert.deepEqual(extractSnippets(''), []);
+        assert.deepEqual(extractSnippets('<div>nothing here</div>'), []);
+    });
+
+    it('extracts result__snippet anchors', () => {
+        const html = '<a class="result__snippet">First good snippet</a>'
+            + '<a class="result__snippet extra">Second good snippet</a>';
+        assert.deepEqual(extractSnippets(html), ['First good snippet', 'Second good snippet']);
+    });
+
+    it('ignores snippets shorter than 10 characters', () => {
+        assert.deepEqual(extractSnippets('<a class="result__snippet">tiny</a>'), []);
+    });
+
+    it('falls back to long generic links', () => {
+        const html = '<a href="https://example.com/a/b">This is a long enough link text</a>';
+        assert.deepEqual(extractSnippets(html), ['This is a long enough link text']);
+    });
+});
+
+describe('extractKeyTerms', () => {
+    it('lowercases, strips stopwords, short words and punctuation', () => {
+        assert.equal(extractKeyTerms('The Quick Brown Fox jumps!'), 'quick brown fox jumps');
+        assert.equal(extractKeyTerms("Mbappe's amazing goal"), 'mbappe amazing goal');
+    });
+
+    it('caps the result at six terms', () => {
+        const terms = extractKeyTerms('alpha bravo charlie delta echo foxtrot golf hotel');
+        assert.equal(terms.split(' ').length, 6);
+    });
+});
+
+describe('extractMetaContent', () => {
+    it('reads content in either attribute order', () => {
+        assert.equal(extractMetaContent('<meta property="og:description" content="Hello desc">', 'og:description'), 'Hello desc');
+        assert.equal(extractMetaContent('<meta content="Reverse order" name="description">', 'description'), 'Reverse order');
+    });
+
+    it('decodes entities and returns null when absent', () => {
+        assert.equal(extractMetaContent('<meta name="description" content="A &amp; B">', 'description'), 'A & B');
+        assert.equal(extractMetaContent('<html></html>', 'description'), null);
+    });
+});
+
+describe('extractBodyText', () => {
+    const long = 'This is a sufficiently long piece of article body text used for testing extraction.';
+
+    it('removes scripts, styles and markup, returning plain text', () => {
+        const html = `<body><script>var x = 1;</script><style>.a{}</style><p>${long}</p></body>`;
+        const out = extractBodyText(html);
+        assert.ok(out.includes('sufficiently long piece'));
+        assert.ok(!out.includes('var x'));
+        assert.ok(!out.includes('<p>'));
+    });
+
+    it('returns null when there is no body or the text is too short', () => {
+        assert.equal(extractBodyText('<div>no body here</div>'), null);
+        assert.equal(extractBodyText('<body><p>too short</p></body>'), null);
     });
 });
