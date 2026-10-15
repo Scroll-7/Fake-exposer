@@ -26,8 +26,7 @@ from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 import onnxruntime as ort
 import numpy as np
-from PIL import Image
-import io
+from nonescape_preprocess import preprocess_nonescape
 
 app = FastAPI(title="AI Image Detection API")
 
@@ -43,23 +42,8 @@ except Exception as e:
 
 
 def preprocess_ai_detection(image_bytes):
-    """Nonescape preprocessing: resize 256, center crop 224, ImageNet normalize."""
-    image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-    # Resize 256
-    image = image.resize((256, 256))
-    # Center crop 224
-    left = (256 - 224) // 2
-    top = (256 - 224) // 2
-    image = image.crop((left, top, left + 224, top + 224))
-    img_data = np.array(image, dtype=np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-    img_data = (img_data - mean) / std
-    # Transpose to CHW: (3, 224, 224)
-    img_data = np.transpose(img_data, (2, 0, 1))
-    # Add batch dimension: (1, 3, 224, 224)
-    img_data = np.expand_dims(img_data, axis=0).astype(np.float32)
-    return img_data
+    """Nonescape preprocessing (shared with the eval harness)."""
+    return preprocess_nonescape(image_bytes)
 
 
 class AiDetectResponse(BaseModel):

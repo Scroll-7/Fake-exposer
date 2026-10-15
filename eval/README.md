@@ -62,6 +62,24 @@ eval/data/images/ai/*.jpg
 > deployment distribution (modern 1024px+ generative photos). Treat the number
 > as a floor for model behaviour, not a guarantee.
 
+#### Model file & preprocessing (fixed)
+
+The shipped `nonescape-mini-v0.onnx` was **broken**: `bin/download-models.ps1`
+fell back to the HuggingFace *safetensors* checkpoint but saved it under the
+`.onnx` name, which onnxruntime cannot parse (`INVALID_PROTOBUF`), so the local
+image detector silently did nothing. The script now downloads the safetensors
+under its real name and converts it with `bin/convert-nonescape.py`, which
+reconstructs the upstream `NonescapeClassifierMini` (`efficientnet_v2_s`
+backbone → `Linear(1024, 2)`, returns raw logits).
+
+`image_api.py` (port 8001) and `image_eval.py` share a single preprocessing
+module (`nonescape_preprocess.py`) that mirrors the upstream SDK: aspect
+preserving resize (shorter edge → 256) → center-crop 224 → JPEG q100 → ImageNet
+normalise. The earlier runtime code forced a 256×256 square, which distorted the
+aspect ratio and produced nonsensical probabilities (a real photo scored
+P(AI)=0.99); with the fix real photos score low (≈0.00–0.05).
+
+
 ### A real sports set (the north star — Phase 3 in the plan)
 The only dataset that predicts production behaviour is labelled sports
 misinformation. Build it incrementally:

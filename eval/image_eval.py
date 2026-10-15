@@ -26,7 +26,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import io
 import os
 import sys
 
@@ -45,17 +44,10 @@ def collect_images(folder: str) -> list[str]:
 
 
 def preprocess(image_bytes: bytes) -> np.ndarray:
-    """Nonescape preprocessing: resize 256, center-crop 224, ImageNet normalise."""
-    from PIL import Image
+    """Nonescape preprocessing: shared with the runtime API (port 8001)."""
+    from nonescape_preprocess import preprocess_nonescape
 
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((256, 256))
-    left = top = (256 - 224) // 2
-    image = image.crop((left, top, left + 224, top + 224))
-    arr = np.asarray(image, dtype=np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-    arr = (arr - mean) / std
-    return np.expand_dims(np.transpose(arr, (2, 0, 1)), axis=0).astype(np.float32)
+    return preprocess_nonescape(image_bytes)
 
 
 def score_images(session, paths: list[str]) -> np.ndarray:

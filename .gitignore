@@ -11,6 +11,7 @@ eval/data/
 *.pkl
 *.onnx
 *.onnx.data
+*.safetensors
 
 # Temporary Files and Caches
 uploads/

@@ -6,6 +6,10 @@ Run from the project root:
 
 from __future__ import annotations
 
+import contextlib
+import io
+import os
+import tempfile
 import unittest
 
 import numpy as np
@@ -140,6 +144,124 @@ class TestManifest(unittest.TestCase):
         path = self._write('{"id":"a","type":"text","input":"x"}\n')
         with self.assertRaises(SystemExit):
             load_manifest(path)
+
+
+class TestImageEval(unittest.TestCase):
+    def test_collect_images_walks_recursively_and_filters(self):
+        from eval.image_eval import collect_images
+
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "sub"))
+        for name in ["a.jpg", "b.PNG", "c.jpeg", "d.webp", "e.bmp", "note.txt", "x.gif"]:
+            open(os.path.join(d, name), "w").close()
+        open(os.path.join(d, "sub", "nested.png"), "w").close()
+
+        got = collect_images(d)
+        names = sorted(os.path.basename(p) for p in got)
+        self.assertEqual(
+            names, ["a.jpg", "b.PNG", "c.jpeg", "d.webp", "e.bmp", "nested.png"]
+        )
+        self.assertEqual(got, sorted(got))  # deterministic ordering
+
+    def test_collect_images_empty_when_dir_missing(self):
+        from eval.image_eval import collect_images
+
+        self.assertEqual(collect_images(os.path.join(tempfile.mkdtemp(), "nope")), [])
+
+    def test_preprocess_shape_and_range(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow not installed")
+        from eval.image_eval import preprocess
+
+        buf = io.BytesIO()
+        Image.new("RGB", (300, 200), (128, 64, 32)).save(buf, format="PNG")
+        arr = preprocess(buf.getvalue())
+        self.assertEqual(arr.shape, (1, 3, 224, 224))
+        self.assertEqual(arr.dtype, np.float32)
+        self.assertLess(float(np.abs(arr).max()), 10.0)
+
+    def test_score_images_softmax_reads_ai_index(self):
+        import eval.image_eval as ie
+
+        class FakeSession:
+            def get_inputs(self):
+                return [type("I", (), {"name": "input"})()]
+
+            def run(self, _outputs, _feed):
+                return [np.array([[0.0, 5.0]], dtype=np.float32)]  # favours AI
+
+        path = os.path.join(tempfile.mkdtemp(), "fake.png")
+        open(path, "wb").close()
+
+        orig = ie.preprocess
+        ie.preprocess = lambda _b: np.zeros((1, 3, 224, 224), dtype=np.float32)
+        try:
+            probs = ie.score_images(FakeSession(), [path, path])
+        finally:
+            ie.preprocess = orig
+
+        expected = float(np.exp(5.0) / (np.exp(0.0) + np.exp(5.0)))
+        self.assertEqual(probs.shape, (2,))
+        np.testing.assert_allclose(probs[0], expected, rtol=1e-6)
+        self.assertGreater(probs[0], 0.99)
+
+    def test_score_images_symmetric_logits_give_half(self):
+        import eval.image_eval as ie
+
+        class FlatSession:
+            def get_inputs(self):
+                return [type("I", (), {"name": "input"})()]
+
+            def run(self, _outputs, _feed):
+                return [np.array([[1.0, 1.0]], dtype=np.float32)]
+
+        path = os.path.join(tempfile.mkdtemp(), "fake.png")
+        open(path, "wb").close()
+
+        orig = ie.preprocess
+        ie.preprocess = lambda _b: np.zeros((1, 3, 224, 224), dtype=np.float32)
+        try:
+            probs = ie.score_images(FlatSession(), [path])
+        finally:
+            ie.preprocess = orig
+        np.testing.assert_allclose(probs[0], 0.5, rtol=1e-9)
+
+
+class TestImageEvalMain(unittest.TestCase):
+    def _run(self, argv):
+        from eval.image_eval import main
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            return main(argv)
+
+    def test_missing_model_returns_1(self):
+        rc = self._run(["--real", "x", "--ai", "y", "--model", "definitely-absent.onnx"])
+        self.assertEqual(rc, 1)
+
+    def test_missing_folders_returns_1(self):
+        d = tempfile.mkdtemp()
+        rc = self._run(
+            [
+                "--real",
+                os.path.join(d, "no_real"),
+                "--ai",
+                os.path.join(d, "no_ai"),
+                "--model",
+                __file__,
+            ]
+        )
+        self.assertEqual(rc, 1)
+
+    def test_empty_folders_returns_1(self):
+        d = tempfile.mkdtemp()
+        real = os.path.join(d, "real")
+        ai = os.path.join(d, "ai")
+        os.makedirs(real)
+        os.makedirs(ai)
+        rc = self._run(["--real", real, "--ai", ai, "--model", __file__])
+        self.assertEqual(rc, 1)
 
 
 if __name__ == "__main__":
