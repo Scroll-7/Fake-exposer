@@ -93,8 +93,15 @@ def cluster_texts(
         minhashes = []
         for i, text in enumerate(texts):
             m = MinHash(num_perm=num_perm, seed=seed)
-            for sh in shingles(text):
-                m.update(sh.encode("utf-8"))
+            sh_list = [sh.encode("utf-8") for sh in shingles(text)]
+            # update_batch applies all permutations in one vectorised numpy op
+            # (bit-identical to looping update(), ~5x faster for long articles).
+            batch = getattr(m, "update_batch", None)
+            if batch is not None:
+                batch(sh_list)
+            else:
+                for sh in sh_list:
+                    m.update(sh)
             minhashes.append(m)
             try:
                 lsh.insert(i, m)
