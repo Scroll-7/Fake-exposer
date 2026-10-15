@@ -58,6 +58,39 @@ const QUERY_TOLERANCE_INSTRUCTIONS = `
     DO NOT mark a claim as "Likely Fake" just because no web results were found. If you cannot verify, lean toward "Unable to Verify" rather than "Likely Fake."
 `;
 
+const ML_CONFIDENCE_GATE = 0.8;
+
+/**
+ * Apply the local Python ML classifier's verdict to an analysis result.
+ *
+ * Pure and exported for unit testing. The local classifier is a calibrated
+ * TF-IDF model trained on 2016-era political news, so it is out-of-distribution
+ * for modern/sports content. It may only cap the score when genuinely confident;
+ * weak predictions abstain rather than dragging real content down. Calibration is
+ * measured in eval/report.py and recorded in fake_news_model.card.json.
+ *
+ * Mutates and returns `result`.
+ */
+export function applyLocalMlSignal(result, ml, gate = ML_CONFIDENCE_GATE) {
+    if (!result || !ml || ml.fake_probability === undefined) return result;
+    const fakeProb = Math.round(ml.fake_probability * 100);
+    if (ml.is_fake && ml.fake_probability >= gate) {
+        result.red_flags = result.red_flags || [];
+        result.red_flags.push(`🤖 Local ML Model predicts Fake News with ${fakeProb}% probability.`);
+        if (result.credibility_score > 50) {
+            result.credibility_score = 50;
+            result.verdict = 'Mixed / Disputed (Local ML Model flagged as Fake)';
+        }
+    } else if (ml.is_fake) {
+        result.red_flags = result.red_flags || [];
+        result.red_flags.push(`🤖 Local ML Model leans Fake (${fakeProb}%) — below the ${Math.round(gate * 100)}% confidence gate, not applied to score.`);
+    } else {
+        result.green_flags = result.green_flags || [];
+        result.green_flags.push(`✅ Local ML Model predicts Real News with ${Math.round(ml.real_probability * 100)}% probability.`);
+    }
+    return result;
+}
+
 export async function analyzeContent(text) {
     if (!process.env.GROQ_API_KEY) {
         throw new Error('GROQ_API_KEY is not configured. Set it in .env to enable text analysis.');
@@ -150,31 +183,7 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
             });
             if (localApiRes.ok) {
                 const localAiResult = await localApiRes.json();
-                if (localAiResult && localAiResult.fake_probability !== undefined) {
-                    const fakeProb = Math.round(localAiResult.fake_probability * 100);
-                    const isFake = localAiResult.is_fake;
-                    // Confidence gate. The local classifier is a calibrated
-                    // TF-IDF model trained on 2016-era political news, so it is
-                    // out-of-distribution for modern/sports content. It may only
-                    // cap the score when it is genuinely confident; weak
-                    // predictions abstain instead of dragging real content down.
-                    // Calibration is measured in eval/report.py.
-                    const ML_CONFIDENCE_GATE = 0.8;
-                    if (isFake && localAiResult.fake_probability >= ML_CONFIDENCE_GATE) {
-                        result.red_flags = result.red_flags || [];
-                        result.red_flags.push(`🤖 Local ML Model predicts Fake News with ${fakeProb}% probability.`);
-                        if (result.credibility_score > 50) {
-                            result.credibility_score = 50;
-                            result.verdict = 'Mixed / Disputed (Local ML Model flagged as Fake)';
-                        }
-                    } else if (isFake) {
-                        result.red_flags = result.red_flags || [];
-                        result.red_flags.push(`🤖 Local ML Model leans Fake (${fakeProb}%) — below the ${Math.round(ML_CONFIDENCE_GATE * 100)}% confidence gate, not applied to score.`);
-                    } else {
-                        result.green_flags = result.green_flags || [];
-                        result.green_flags.push(`✅ Local ML Model predicts Real News with ${Math.round(localAiResult.real_probability * 100)}% probability.`);
-                    }
-                }
+                applyLocalMlSignal(result, localAiResult);
             }
         } catch {
             logger.info('Local Python ML API not reachable or timed out, skipping ML score...');
