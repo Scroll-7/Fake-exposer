@@ -54,14 +54,17 @@ that the shipped model is not a safe default for arbitrary user uploads.
 ## Reproduce
 
 ```bash
-# fetch the (small, 8.4 MB) test parquet
-python -c "from huggingface_hub import hf_hub_download; \
-hf_hub_download('dragonintelligence/CIFAKE-image-dataset', \
-'data/test-00000-of-00001.parquet', repo_type='dataset')"
+# fetch a balanced subset (default 1000 per class) from HF mirror (no auth)
+python -m eval.fetch_cifake --limit 1000
 
-# extract 1000 per class into eval/data/images/{real,ai}, then:
+# run evaluation
 python -m eval.image_eval --real eval/data/images/real --ai eval/data/images/ai --limit 1000
 ```
+
+The fetcher downloads the small test parquet (8.4 MB) via `huggingface_hub` and
+writes JPEGs to `eval/data/images/real` and `eval/data/images/ai`. You can also
+run the inline one-liner shown in commit history; the script above is the
+reproducible, committed version.
 
 ## Recommendation
 

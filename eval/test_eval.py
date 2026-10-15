@@ -264,5 +264,28 @@ class TestImageEvalMain(unittest.TestCase):
         self.assertEqual(rc, 1)
 
 
+class TestFetchCifake(unittest.TestCase):
+    def test_target_dir_mapping(self):
+        from eval.fetch_cifake import LABEL_AI, LABEL_REAL, target_dir
+
+        self.assertEqual(target_dir(LABEL_REAL), "real")
+        self.assertEqual(target_dir(LABEL_AI), "ai")
+        self.assertEqual(target_dir(0), "real")
+        self.assertEqual(target_dir(1), "ai")
+
+    def test_write_images_writes_jpgs(self):
+        from eval.fetch_cifake import write_images
+
+        d = tempfile.mkdtemp()
+        raw = b"\xff\xd8\xff\xd9"  # minimal dummy JPEG bytes
+        n = write_images([raw, raw], d)
+        self.assertEqual(n, 2)
+        self.assertEqual(len(os.listdir(d)), 2)
+        # check files are readable
+        for name in sorted(os.listdir(d)):
+            with open(os.path.join(d, name), "rb") as f:
+                self.assertEqual(f.read(), raw)
+
+
 if __name__ == "__main__":
     unittest.main()
