@@ -1,6 +1,6 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeAiOverride } from '../services/aiDetector.js';
+import { computeAiOverride, detectAiImage } from '../services/aiDetector.js';
 
 describe('computeAiOverride', () => {
     it('returns null for no detection', () => {
@@ -71,5 +71,130 @@ describe('computeAiOverride', () => {
         it('returns null below 50%', () => {
             assert.equal(computeAiOverride({ aiProbability: 49, confidence: 'Low' }), null);
         });
+    });
+});
+
+describe('detectAiImage', () => {
+    const origKeys = process.env.GEMINI_API_KEYS;
+
+    after(() => {
+        if (origKeys === undefined) delete process.env.GEMINI_API_KEYS;
+        else process.env.GEMINI_API_KEYS = origKeys;
+        mock.reset();
+    });
+
+    function geminiPayload(obj) {
+        return { candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] };
+    }
+
+    function okResponse(payload) {
+        return {
+            status: 200,
+            ok: true,
+            text: () => Promise.resolve(''),
+            json: () => Promise.resolve(payload),
+        };
+    }
+
+    const validBody = {
+        image_category: 'Mirror Selfie',
+        ai_probability: 90,
+        verdict: 'AI-Generated',
+        confidence: 'High',
+        artifacts_detected: ['halo'],
+        reasoning: 'rendered skin',
+        description: 'a man in a mirror',
+    };
+
+    it('returns null without calling the network when no keys are set', async () => {
+        delete process.env.GEMINI_API_KEYS;
+        const spy = mock.method(global, 'fetch', () => { throw new Error('should not be called'); });
+        assert.equal(await detectAiImage('b64', 'image/png'), null);
+        assert.equal(spy.mock.callCount(), 0);
+        mock.reset();
+    });
+
+    it('parses a successful Gemini JSON response', async () => {
+        process.env.GEMINI_API_KEYS = 'k1';
+        mock.method(global, 'fetch', () => Promise.resolve(okResponse(geminiPayload(validBody))));
+        const r = await detectAiImage('b64', 'image/png');
+        assert.equal(r.aiProbability, 90);
+        assert.equal(r.isAI, true);
+        assert.equal(r.verdict, 'AI-Generated');
+        assert.equal(r.imageCategory, 'Mirror Selfie');
+        assert.equal(r.confidence, 'High');
+        assert.deepEqual(r.artifacts, ['halo']);
+        assert.equal(r.description, 'a man in a mirror');
+        mock.reset();
+    });
+
+    it('flags isAI at the 45% boundary', async () => {
+        process.env.GEMINI_API_KEYS = 'k1';
+        mock.method(global, 'fetch', () => Promise.resolve(
+            okResponse(geminiPayload({ ...validBody, ai_probability: 45 }))
+        ));
+        assert.equal((await detectAiImage('b', 'image/png')).isAI, true);
+        mock.reset();
+
+        mock.method(global, 'fetch', () => Promise.resolve(
+            okResponse(geminiPayload({ ...validBody, ai_probability: 44 }))
+        ));
+        assert.equal((await detectAiImage('b', 'image/png')).isAI, false);
+        mock.reset();
+    });
+
+    it('defaults optional fields when absent', async () => {
+        process.env.GEMINI_API_KEYS = 'k1';
+        mock.method(global, 'fetch', () => Promise.resolve(
+            okResponse(geminiPayload({ ai_probability: 70, verdict: 'Likely', confidence: 'Medium' }))
+        ));
+        const r = await detectAiImage('b', 'image/png');
+        assert.equal(r.imageCategory, 'Other');
+        assert.deepEqual(r.artifacts, []);
+        assert.equal(r.reasoning, '');
+        mock.reset();
+    });
+
+    it('advances to the next model when one returns 503', async () => {
+        process.env.GEMINI_API_KEYS = 'k1';
+        let calls = 0;
+        mock.method(global, 'fetch', () => {
+            calls++;
+            if (calls === 1) {
+                return Promise.resolve({ status: 503, ok: false, text: () => Promise.resolve('busy') });
+            }
+            return Promise.resolve(okResponse(geminiPayload(validBody)));
+        });
+        const r = await detectAiImage('b', 'image/png');
+        assert.equal(r.aiProbability, 90);
+        assert.equal(calls, 2);
+        mock.reset();
+    });
+
+    it('returns null when every model is unavailable', async () => {
+        process.env.GEMINI_API_KEYS = 'k1';
+        mock.method(global, 'fetch', () => Promise.resolve(
+            { status: 503, ok: false, text: () => Promise.resolve('busy') }
+        ));
+        assert.equal(await detectAiImage('b', 'image/png'), null);
+        mock.reset();
+    });
+
+    it('returns null on a non-ok response', async () => {
+        process.env.GEMINI_API_KEYS = 'k1';
+        mock.method(global, 'fetch', () => Promise.resolve(
+            { status: 500, ok: false, text: () => Promise.resolve('server error') }
+        ));
+        assert.equal(await detectAiImage('b', 'image/png'), null);
+        mock.reset();
+    });
+
+    it('returns null when the model output is not valid JSON', async () => {
+        process.env.GEMINI_API_KEYS = 'k1';
+        mock.method(global, 'fetch', () => Promise.resolve(
+            { status: 200, ok: true, text: () => Promise.resolve(''), json: () => Promise.resolve({ candidates: [{ content: { parts: [{ text: 'not json' }] } }] }) }
+        ));
+        assert.equal(await detectAiImage('b', 'image/png'), null);
+        mock.reset();
     });
 });

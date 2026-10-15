@@ -1,4 +1,4 @@
-import { describe, it, after } from 'node:test';
+import { describe, it, after, before } from 'node:test';
 import assert from 'node:assert/strict';
 
 describe('Groq API key validation', () => {
@@ -82,5 +82,64 @@ describe('applyLocalMlSignal (ML confidence gate)', () => {
         const result = emptyResult();
         applyLocalMlSignal(result, { is_fake: true, fake_probability: 0.7, real_probability: 0.3 }, 0.6);
         assert.equal(result.credibility_score, 50);
+    });
+});
+
+describe('extractTrustedSource', () => {
+    let extractTrustedSource;
+    before(async () => {
+        ({ extractTrustedSource } = await import('../services/groq.js'));
+    });
+
+    it('returns null for empty or unmatched text', () => {
+        assert.equal(extractTrustedSource(null), null);
+        assert.equal(extractTrustedSource(''), null);
+        assert.equal(extractTrustedSource('just some random sentence'), null);
+    });
+
+    it('matches known journalists and outlets case-insensitively', () => {
+        assert.equal(extractTrustedSource('According to Fabrizio Romano, here we go!'), 'Fabrizio Romano');
+        assert.equal(extractTrustedSource('reuters is reporting this'), 'Reuters');
+        assert.equal(extractTrustedSource('espn confirmed the trade'), 'ESPN');
+    });
+});
+
+describe('detectSportsSuspicion', () => {
+    let detectSportsSuspicion;
+    before(async () => {
+        ({ detectSportsSuspicion } = await import('../services/groq.js'));
+    });
+    const noTeam = () => null;
+    const SPORTS_DESC = 'a player celebrates a goal during the match at the stadium';
+
+    it('returns null when a face override or jersey mismatch is present', () => {
+        assert.equal(detectSportsSuspicion('player-1', null, SPORTS_DESC, noTeam), null);
+        assert.equal(detectSportsSuspicion(null, { player: 'x' }, SPORTS_DESC, noTeam), null);
+    });
+
+    it('returns null without a description', () => {
+        assert.equal(detectSportsSuspicion(null, null, '', noTeam), null);
+    });
+
+    it('skips selfies and portraits via the Gemini category', () => {
+        assert.equal(detectSportsSuspicion(null, null, SPORTS_DESC, noTeam, 'Mirror Selfie'), null);
+        assert.equal(detectSportsSuspicion(null, null, SPORTS_DESC, noTeam, 'Portrait'), null);
+    });
+
+    it('does not flag descriptions containing anti-sports keywords', () => {
+        assert.equal(detectSportsSuspicion(null, null, 'a player stands on the field near the goal during the match', noTeam), null);
+    });
+
+    it('requires at least three sports keywords', () => {
+        assert.equal(detectSportsSuspicion(null, null, 'a player at the stadium', noTeam), null);
+    });
+
+    it('flags an unidentifiable sports image', () => {
+        const out = detectSportsSuspicion(null, null, SPORTS_DESC, noTeam);
+        assert.match(out, /could not be identified/);
+    });
+
+    it('does not flag when a team can be identified', () => {
+        assert.equal(detectSportsSuspicion(null, null, SPORTS_DESC, () => 'Barcelona'), null);
     });
 });
