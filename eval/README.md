@@ -79,6 +79,10 @@ normalise. The earlier runtime code forced a 256×256 square, which distorted th
 aspect ratio and produced nonsensical probabilities (a real photo scored
 P(AI)=0.99); with the fix real photos score low (≈0.00–0.05).
 
+Measured honestly on CIFAKE, the model is still only **ROC-AUC 0.63** and
+miscalibrated (it flags ~98% of real images as AI) — read it as a weak signal,
+not a verdict. Full numbers and caveats: `docs/eval-image.md`.
+
 
 ### A real sports set (the north star — Phase 3 in the plan)
 The only dataset that predicts production behaviour is labelled sports
