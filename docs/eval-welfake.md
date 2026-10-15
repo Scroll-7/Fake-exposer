@@ -1,7 +1,7 @@
 # Text classifier evaluation — WELFake (leak-free)
 
 Run: `python -m eval.report --data WELFake_Dataset.csv --compare-legacy`
-Date: 2026-10-12 · seed 42 · WELFake_Dataset.csv (72,134 rows)
+Date: 2026-10-12 · split seed 42 · dedup seed 1 · WELFake_Dataset.csv (72,134 rows)
 
 ## Result
 
@@ -18,6 +18,26 @@ Date: 2026-10-12 · seed 42 · WELFake_Dataset.csv (72,134 rows)
 | Train-val gap | +0.0120 (ok) | n/a |
 
 Confusion (corrected): TN=6723, FP=309, FN=338, TP=7057 (n=14,427).
+
+## Deployed model (the artifact that ships)
+
+`auto_train.py --force` retrained the shipped `fake_news_model.pkl` through the
+same corrected pipeline. Its card (`fake_news_model.card.json`) records:
+
+| Metric | Value |
+|---|---|
+| Accuracy / macro-F1 | 0.9498 |
+| ROC-AUC / PR-AUC | 0.9906 / 0.9908 |
+| Brier | 0.0363 |
+| **ECE** | **0.0087** |
+| train-val gap | +0.0136 (ok) |
+| dedup removed | 9,685 rows (13.43%) |
+
+This differs from the table above by ~0.5 pt, and that is expected: the
+retrain used **dedup seed 42** while this baseline run used the older default
+**dedup seed 1** (different MinHash permutations → slightly different clusters
+and test set). `eval/report.py` now forwards its `--seed` to the deduper, so a
+fresh run reproduces the card.
 
 Deduplication found **9,708 duplicate rows (13.46%)**, the largest cluster
 holding 48 rows — real leakage that a random split would spread across both

@@ -164,7 +164,7 @@ def main(argv=None) -> int:
         labels = df[args.label_col].astype(int).tolist()
 
         cluster_ids, near_ok = cluster_texts(
-            texts, threshold=args.near_dup_threshold
+            texts, threshold=args.near_dup_threshold, seed=args.seed
         )
         stats = cluster_stats(cluster_ids)
         _print_cluster_stats(stats, near_ok)
@@ -197,7 +197,8 @@ def main(argv=None) -> int:
     labels = df[args.label_col].astype(int).tolist()
     print(f"  Rows loaded:        {len(texts):,}")
 
-    cluster_ids, near_ok = cluster_texts(texts, threshold=args.near_dup_threshold)
+    cluster_ids, near_ok = cluster_texts(texts, threshold=args.near_dup_threshold,
+                                         seed=args.seed)
     stats = cluster_stats(cluster_ids)
     _print_cluster_stats(stats, near_ok)
 
