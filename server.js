@@ -210,15 +210,20 @@ app.get('/api/face/known', async (req, res) => {
         const faceRes = await fetch('http://127.0.0.1:8002/health', { signal: AbortSignal.timeout(3000) });
         if (faceRes.ok) {
             const data = await faceRes.json();
-            res.json({
-                available: true,
-                known_faces_count: data.known_faces_count,
-                players: [
+            // Prefer the live list from the Face API; only fall back to this
+            // static list for older face_api builds that report only a count.
+            const players = Array.isArray(data.players) && data.players.length
+                ? data.players
+                : [
                     'cristiano ronaldo', 'de bruyne', 'haaland', 'harry kane',
                     'jude bellingham', 'lewandowski',
                     'lionel messi', 'mbappe', 'michael olise', 'neymar',
                     'salah', 'vinicius jr'
-                ]
+                ];
+            res.json({
+                available: true,
+                known_faces_count: data.known_faces_count,
+                players
             });
         } else {
             res.json({ available: false, known_faces_count: 0, players: [] });

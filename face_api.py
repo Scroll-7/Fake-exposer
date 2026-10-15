@@ -60,6 +60,7 @@ def health():
     return {
         "status": "ok",
         "known_faces_count": len(known_embeddings),
+        "players": sorted(known_embeddings.keys()),
         "model": "buffalo_l"
     }
 
