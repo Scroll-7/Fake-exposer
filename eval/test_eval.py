@@ -361,6 +361,23 @@ class TestProbeNonescape(unittest.TestCase):
         self.assertLess(good, 0.05)
         self.assertGreater(bad, good)
 
+    def test_expand_head_builds_two_class_head(self):
+        probe = _load_probe()
+        coef = np.array([[1.0, 2.0]], dtype=np.float32)  # (1, F) LR row
+        bias = np.array([-0.5], dtype=np.float32)  # (1,)
+        weight, new_bias = probe.expand_head(coef, bias)
+        self.assertEqual(weight.shape, (2, 2))
+        self.assertTrue(np.array_equal(weight[0], np.zeros(2)))
+        self.assertTrue(np.array_equal(weight[1], coef[0]))
+        self.assertEqual(new_bias.shape, (2,))
+        self.assertEqual(new_bias[0], 0.0)
+        self.assertAlmostEqual(float(new_bias[1]), -0.5, places=5)
+        # softmax over (0, coef.x + b) must equal sigmoid(coef.x + b)
+        x = np.array([[3.0, -1.0]], dtype=np.float32)
+        p = probe.softmax_ai(x @ weight.T + new_bias)
+        expected = 1.0 / (1.0 + np.exp(-(3.0 * 1.0 + (-1.0) * 2.0 - 0.5)))
+        self.assertAlmostEqual(float(p[0]), float(expected), places=5)
+
     def test_read_labels_and_sampling(self):
         probe = _load_probe()
         d = tempfile.mkdtemp()

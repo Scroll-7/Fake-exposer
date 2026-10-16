@@ -151,6 +151,26 @@ def ece_score(y, prob, bins=15):
     return float(ece)
 
 
+def expand_head(coef, bias):
+    """Map an sklearn LR head to the Nonescape 2-class Linear head.
+
+    ``LogisticRegression`` stores a single weight row for the positive (AI)
+    class: ``coef`` is ``(1, F)`` and ``bias`` is ``(1,)``. The Nonescape head is
+    ``Linear(F, 2)``, so class-0 logits are fixed at 0 and class-1 logits are the
+    LR decision function. Softmax over ``(0, coef·x + b)`` then equals
+    ``sigmoid(coef·x + b)`` — the probe's calibrated P(AI).
+
+    Returns ``(weight ``(2, F)``, bias ``(2,)``)``.
+    """
+    coef = np.asarray(coef, dtype=np.float32)
+    bias = np.asarray(bias, dtype=np.float32).reshape(-1)
+    weight = np.zeros((2, coef.shape[1]), dtype=np.float32)
+    weight[1] = coef[0]
+    new_bias = np.zeros(2, dtype=np.float32)
+    new_bias[1] = bias[0]
+    return weight, new_bias
+
+
 def cmd_features(args):
     model, _ = build_backbone()
     rows = read_labels(args.csv, args.root, args.path_col, args.label_col, args.real_label)
@@ -221,12 +241,7 @@ def cmd_export(args):
     from safetensors.torch import load_file
 
     h = np.load(args.head)
-    coef = h["weight"]  # (1, 1024) for the AI (positive) class
-    bias = h["bias"]  # (1,)
-    weight = np.zeros((2, coef.shape[1]), dtype=np.float32)
-    weight[1] = coef[0]  # AI logit = coef . x + bias; class 0 logit fixed at 0
-    new_bias = np.zeros(2, dtype=np.float32)
-    new_bias[1] = bias[0]
+    weight, new_bias = expand_head(h["weight"], h["bias"])
 
     sd = dict(load_file(args.safetensors))
     sd["head.weight"] = torch.tensor(weight)
