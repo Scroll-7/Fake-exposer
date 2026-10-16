@@ -5,21 +5,32 @@
  */
 import { withRetry } from './retry.js';
 import { logger } from './logger.js';
+import { createKeyRing } from './keyring.js';
 
-// Rotate through available API keys
-let keyIndex = 0;
-function getNextGeminiKey() {
-    const rawKeys = (process.env.GEMINI_API_KEYS || '').split(',').map(k => k.trim()).filter(Boolean);
-    if (!rawKeys.length) return null;
-    const key = rawKeys[keyIndex % rawKeys.length];
-    keyIndex++;
-    return key;
+// Failover-only key pool. Rebuilt whenever GEMINI_API_KEYS changes, which also
+// lets tests reset state between cases.
+const DENIED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
+let geminiKeyring = null;
+let geminiKeyringRaw = null;
+function getGeminiKeyring() {
+    const raw = process.env.GEMINI_API_KEYS || '';
+    if (!geminiKeyring || geminiKeyringRaw !== raw) {
+        geminiKeyring = createKeyRing(raw, { defaultCooldownMs: RATE_LIMIT_COOLDOWN_MS });
+        geminiKeyringRaw = raw;
+    }
+    return geminiKeyring;
+}
+
+export function resetGeminiKeyring() {
+    geminiKeyring = null;
+    geminiKeyringRaw = null;
 }
 
 export async function detectAiImage(imageBase64, mimeType) {
-    const apiKey = getNextGeminiKey();
-    if (!apiKey) {
-        logger.warn('No GEMINI_API_KEYS set — skipping dedicated AI detection step.');
+    const keyring = getGeminiKeyring();
+    if (keyring.current() === null) {
+        logger.warn('No usable GEMINI_API_KEYS — skipping dedicated AI detection step.');
         return null;
     }
 
@@ -169,9 +180,12 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
 
         let response = null;
         let usedModel = null;
-        let currentKey = apiKey;
+        let currentKey = keyring.current();
+        const keyCount = Math.max(1, keyring.size);
+        let allKeysQuarantined = false;
         for (const model of GEMINI_MODELS) {
-            logger.info(`Sending image to Gemini model: ${model} (key index ${keyIndex - 1})...`);
+          for (let keyAttempt = 0; keyAttempt < keyCount && currentKey; keyAttempt++) {
+            logger.info(`Sending image to Gemini model: ${model} (key attempt ${keyAttempt + 1}/${keyCount})...`);
             const startTime = Date.now();
             const r = await withRetry(() => fetch(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`,
@@ -196,21 +210,50 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
             ), { maxRetries: 2, onRetry: (err, a) => logger.warn(`Gemini ${model} retry ${a}: ${err.message}`) });
             logger.info(`Gemini ${model} fetch completed in ${Date.now() - startTime}ms, status=${r.status}`);
 
-            if (r.status === 503 || r.status === 429) {
-                const errBody = await r.text();
-                logger.warn(`Gemini model ${model} unavailable (${r.status}): ${errBody.slice(0, 150)} — trying next key...`);
-                currentKey = getNextGeminiKey();
-                if (!currentKey) break;
+            // Model retired / not available for this API version — try the next model.
+            if (r.status === 404) {
+                logger.warn(`Gemini model ${model} not available (404) — trying next model...`);
+                break;
+            }
+
+            // Server overloaded — transient, not the key's fault. Keep the key and
+            // move on to the next model.
+            if (r.status === 503) {
+                logger.warn(`Gemini model ${model} overloaded (503) — trying next model...`);
+                break;
+            }
+
+            // Key denied (permission / expired / revoked) — quarantine it for a long
+            // while and fail over to the next key.
+            if (r.status === 401 || r.status === 403) {
+                const errBody = await r.text().catch(() => '');
+                logger.warn(`Gemini key rejected (HTTP ${r.status}): ${errBody.slice(0, 150)} — quarantining key and failing over...`);
+                keyring.markBad(currentKey, DENIED_COOLDOWN_MS);
+                currentKey = keyring.rotate();
+                if (!currentKey) { allKeysQuarantined = true; break; }
+                continue;
+            }
+
+            // Key rate-limited / daily quota exhausted — cool it down (it may reset
+            // later) and fail over to the next key.
+            if (r.status === 429) {
+                const errBody = await r.text().catch(() => '');
+                logger.warn(`Gemini key rate-limited (HTTP 429): ${errBody.slice(0, 150)} — cooling down key and failing over...`);
+                keyring.markBad(currentKey);
+                currentKey = keyring.rotate();
+                if (!currentKey) { allKeysQuarantined = true; break; }
                 continue;
             }
 
             response = r;
             usedModel = model;
             break;
+          }
+          if (response || allKeysQuarantined) break;
         }
 
         if (!response) {
-            logger.warn('All Gemini models returned 503/429 — skipping AI detection.');
+            logger.warn('All Gemini models/keys unavailable — skipping AI detection.');
             return null;
         }
 

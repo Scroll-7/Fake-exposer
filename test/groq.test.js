@@ -203,8 +203,10 @@ describe('detectSportsSuspicion', () => {
 describe('analyzeImage (mocked network pipeline)', () => {
     const originalGroqKey = process.env.GROQ_API_KEY;
     const originalGeminiKeys = process.env.GEMINI_API_KEYS;
+    const originalVisionModels = process.env.GROQ_VISION_MODELS;
     const originalFetch = globalThis.fetch;
     let analyzeImage;
+    let resetGroqKeyring;
 
     const baseAnalysis = () => ({
         credibility_score: 90,
@@ -253,12 +255,15 @@ describe('analyzeImage (mocked network pipeline)', () => {
     before(async () => {
         process.env.GROQ_API_KEY = 'test-key';
         process.env.GEMINI_API_KEYS = '';
-        ({ analyzeImage } = await import('../services/groq.js'));
+        process.env.GROQ_VISION_MODELS = 'mock-vision-model';
+        ({ analyzeImage, resetGroqKeyring } = await import('../services/groq.js'));
     });
 
     after(() => {
         process.env.GROQ_API_KEY = originalGroqKey;
         process.env.GEMINI_API_KEYS = originalGeminiKeys;
+        if (originalVisionModels === undefined) delete process.env.GROQ_VISION_MODELS;
+        else process.env.GROQ_VISION_MODELS = originalVisionModels;
         globalThis.fetch = originalFetch;
     });
 
@@ -356,5 +361,38 @@ describe('analyzeImage (mocked network pipeline)', () => {
             assert.equal(r.verdict, 'Highly Credible');
             assert.ok(r.red_flags.some(f => /Gemini AI Detector/.test(f)));
         });
+    });
+
+    it('fails over to the next Groq key when the first is denied (403)', async () => {
+        const prevKeys = process.env.GROQ_API_KEYS;
+        process.env.GROQ_API_KEYS = 'gk1,gk2';
+        resetGroqKeyring();
+        const seenAuth = [];
+        globalThis.fetch = (url, init = {}) => {
+            const u = String(url);
+            if (u.includes(':8002/recognize')) return Promise.resolve(ok({ player: null }));
+            if (u.includes(':8001/detect_ai')) return Promise.resolve(ok({ ai_probability: 0.05 }));
+            if (u.includes('api.groq.com')) {
+                const auth = init.headers?.Authorization;
+                seenAuth.push(auth);
+                if (auth === 'Bearer gk1') {
+                    return Promise.resolve({ ok: false, status: 403, text: async () => 'denied', json: async () => ({}) });
+                }
+                const payload = JSON.parse(init.body);
+                const content = payload.max_tokens === 250 ? '' : JSON.stringify(baseAnalysis());
+                return Promise.resolve(ok({ choices: [{ message: { content } }] }));
+            }
+            throw new Error(`Unexpected fetch in test: ${u}`);
+        };
+        try {
+            const r = await analyzeImage('dGVzdA==', 'image/png');
+            assert.equal(r.credibility_score, 90);
+            assert.equal(seenAuth[0], 'Bearer gk1');
+            assert.equal(seenAuth[1], 'Bearer gk2');
+        } finally {
+            if (prevKeys === undefined) delete process.env.GROQ_API_KEYS;
+            else process.env.GROQ_API_KEYS = prevKeys;
+            resetGroqKeyring();
+        }
     });
 });

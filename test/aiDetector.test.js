@@ -1,6 +1,6 @@
-import { describe, it, mock, after } from 'node:test';
+import { describe, it, mock, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeAiOverride, detectAiImage } from '../services/aiDetector.js';
+import { computeAiOverride, detectAiImage, resetGeminiKeyring } from '../services/aiDetector.js';
 
 describe('computeAiOverride', () => {
     it('returns null for no detection', () => {
@@ -76,6 +76,11 @@ describe('computeAiOverride', () => {
 
 describe('detectAiImage', () => {
     const origKeys = process.env.GEMINI_API_KEYS;
+
+    beforeEach(() => {
+        resetGeminiKeyring();
+        mock.reset();
+    });
 
     after(() => {
         if (origKeys === undefined) delete process.env.GEMINI_API_KEYS;
@@ -168,6 +173,31 @@ describe('detectAiImage', () => {
         const r = await detectAiImage('b', 'image/png');
         assert.equal(r.aiProbability, 90);
         assert.equal(calls, 2);
+        mock.reset();
+    });
+
+    it('rotates to another key when one is denied (403)', async () => {
+        process.env.GEMINI_API_KEYS = 'k1,k2';
+        let calls = 0;
+        mock.method(global, 'fetch', () => {
+            calls++;
+            if (calls === 1) {
+                return Promise.resolve({ status: 403, ok: false, text: () => Promise.resolve('denied') });
+            }
+            return Promise.resolve(okResponse(geminiPayload(validBody)));
+        });
+        const r = await detectAiImage('b', 'image/png');
+        assert.equal(r.aiProbability, 90);
+        assert.equal(calls, 2);
+        mock.reset();
+    });
+
+    it('returns null when every key is denied (403)', async () => {
+        process.env.GEMINI_API_KEYS = 'k1';
+        mock.method(global, 'fetch', () => Promise.resolve(
+            { status: 403, ok: false, text: () => Promise.resolve('denied') }
+        ));
+        assert.equal(await detectAiImage('b', 'image/png'), null);
         mock.reset();
     });
 

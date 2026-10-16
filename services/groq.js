@@ -5,12 +5,42 @@ import { detectAiImage, computeAiOverride } from './aiDetector.js';
 import { detectExtremePhysiqueCasualSetting, detectAiPortrait, detectAiFilename } from './heuristics.js';
 import { detectJerseyMismatch, findTeamInText, PLAYER_CLUBS, getCelebrityContext } from './sportsKB.js';
 import { searchWeb } from './scraper.js';
-import { withRetry } from './retry.js';
 import { analyzeText } from './textDetector.js';
 import { logger } from './logger.js';
+import { createKeyRing } from './keyring.js';
 dotenv.config();
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const GROQ_DENIED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const GROQ_RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
+
+// Failover-only Groq key pool. Provide GROQ_API_KEYS (comma-separated) for multiple
+// keys; GROQ_API_KEY still works for a single key. Rebuilt when the env changes.
+let groqKeyring = null;
+let groqKeyringRaw = null;
+function getGroqKeyring() {
+    const raw = process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY || '';
+    if (!groqKeyring || groqKeyringRaw !== raw) {
+        groqKeyring = createKeyRing(raw, { defaultCooldownMs: GROQ_RATE_LIMIT_COOLDOWN_MS });
+        groqKeyringRaw = raw;
+    }
+    return groqKeyring;
+}
+
+export function resetGroqKeyring() {
+    groqKeyring = null;
+    groqKeyringRaw = null;
+}
+
+// One SDK client per key, created lazily.
+const groqClients = new Map();
+function getGroqClient(key) {
+    if (!groqClients.has(key)) groqClients.set(key, new Groq({ apiKey: key }));
+    return groqClients.get(key);
+}
+
+function isNetworkError(msg) {
+    return /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|econnrefused|network|timeout|abort/i.test(msg);
+}
 
 /**
  * Rule-based heuristic: detects if the original filename contains obvious AI generator artifacts.
@@ -139,7 +169,7 @@ export function nonescapeAdvisory(prob) {
 }
 
 export async function analyzeContent(text) {
-    if (!process.env.GROQ_API_KEY) {
+    if (!getGroqKeyring().current()) {
         throw new Error('GROQ_API_KEY is not configured. Set it in .env to enable text analysis.');
     }
     // Truncate query for DuckDuckGo to avoid massive payload errors (DuckDuckGo expects short queries)
@@ -210,12 +240,7 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
     `;
 
     try {
-        const completion = await withRetry(() => groq.chat.completions.create({
-            messages: [{ role: 'user', content: prompt }],
-            model: 'llama-3.3-70b-versatile',
-            response_format: { type: 'json_object' },
-            temperature: 0.1,
-        }), { onRetry: (err, attempt) => logger.warn(`Groq text analysis retry ${attempt}: ${err.message}`) });
+        const completion = await groqTextCompletion(prompt);
 
         const responseText = completion.choices[0]?.message?.content || '{}';
         const result = JSON.parse(responseText);
@@ -261,86 +286,165 @@ ${detectorResult.overallScore >= 80 ? '\nCRITICAL: This text very closely matche
     }
 }
 
-// Vision models to try in order — if one is over capacity, fall back to the next
-const VISION_MODELS = [
-    'meta-llama/llama-4-scout-17b-16e-instruct',
-    'meta-llama/llama-4-maverick-17b-128e-instruct',
-    'qwen/qwen3.6-27b',
+// Model catalogues are env-overridable because Groq rotates/retires model names
+// per account — hardcoding them caused every request to 404 (see GROQ_TEXT_MODELS
+// in .env.example). A comma-separated env value wins; an empty value means "none".
+function parseModelList(envValue, defaults) {
+    if (envValue === undefined) return defaults;
+    return envValue.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+// Text models to try in order, resolved at call time so tests/env changes apply.
+const DEFAULT_TEXT_MODELS = [
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b',
+    'qwen/qwen3.8-27b',
 ];
 
-async function groqVisionRequest(messages, maxTokens = 500) {
-    const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) throw new Error('GROQ_API_KEY is not configured');
+const DEFAULT_VISION_MODELS = [
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'meta-llama/llama-4-maverick-17b-128e-instruct',
+];
+
+// Try each text model in turn; a retired/unknown model falls through to the next.
+// Key-level failures (401/403/429) quarantine the key and fail over to the next key.
+async function groqTextCompletion(prompt) {
+    const models = parseModelList(process.env.GROQ_TEXT_MODELS, DEFAULT_TEXT_MODELS);
+    const keyring = getGroqKeyring();
+    const keyCount = Math.max(1, keyring.size);
+    let currentKey = keyring.current();
+    if (!currentKey) throw new Error('GROQ_API_KEY is not configured. Set it in .env to enable text analysis.');
 
     let lastError;
-    for (const model of VISION_MODELS) {
-        try {
-            logger.info(`Trying vision model via direct API: ${model}`);
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 45000);
-            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
+    for (const model of models) {
+        for (let keyAttempt = 0; keyAttempt < keyCount && currentKey; keyAttempt++) {
+            try {
+                logger.info(`Trying text model: ${model} (key attempt ${keyAttempt + 1}/${keyCount})`);
+                return await getGroqClient(currentKey).chat.completions.create({
+                    messages: [{ role: 'user', content: prompt }],
                     model,
-                    messages,
+                    response_format: { type: 'json_object' },
                     temperature: 0.1,
-                    max_tokens: maxTokens,
-                }),
-                signal: controller.signal,
-            });
-            clearTimeout(timeoutId);
+                });
+            } catch (err) {
+                lastError = err;
+                const msg = err?.message || '';
+                const status = err?.status;
 
-            if (!res.ok) {
-                const errBody = await res.text().catch(() => '');
-                const msg = `${res.status}: ${errBody.slice(0, 200)}`;
-                const noVision = /does not support image/i.test(errBody);
-                const transient = res.status === 429 || res.status === 503 || res.status === 404 ||
-                    !errBody || /over capacity|unavailable|rate limit|too many requests|temporarily/i.test(errBody);
-                if (noVision || transient) {
-                    // Transient (rate limit / over capacity) or "this model can't see images" —
-                    // fall through to the next model.
-                    logger.warn(`Model ${model} unavailable (${res.status}): ${msg.slice(0, 120)} — trying next...`);
-                    lastError = new Error(msg);
+                // Key-level failure — quarantine and fail over to the next key.
+                if (status === 401 || status === 403 || status === 429) {
+                    logger.warn(`Groq key rejected (HTTP ${status}) — quarantining key and failing over...`);
+                    keyring.markBad(currentKey, status === 429 ? undefined : GROQ_DENIED_COOLDOWN_MS);
+                    currentKey = keyring.rotate();
                     continue;
                 }
-                // Non-transient error (e.g. 400 invalid image data, 401 auth) — retrying
-                // other models would fail identically and burn quota. Abort immediately.
-                logger.warn(`Model ${model} returned non-transient error ${res.status}: ${msg.slice(0, 120)} — aborting vision request.`);
-                throw new Error(`Groq API error: ${msg}`);
-            }
 
-            const completion = await res.json();
-            // Detect vision error returned as 200 OK with error text in content
-            const content = completion?.choices?.[0]?.message?.content || '';
-            if (/does not support image|cannot read|cannot process|unable to process/i.test(content)) {
-                logger.warn(`Model ${model} returned error text in 200 response — trying next...`);
-                lastError = new Error(content.slice(0, 200));
-                continue;
+                // Retired/unknown model — fall through to the next model.
+                if (/does not exist|do not have access|model_not_found|not found|404/i.test(msg)) {
+                    logger.warn(`Text model ${model} unavailable (${msg.slice(0, 120)}) — trying next...`);
+                    break;
+                }
+
+                // Transient network/server error — try the next model.
+                if (status === 500 || status === 502 || status === 503 || isNetworkError(msg)) {
+                    logger.warn(`Text model ${model} transient error (${msg.slice(0, 120)}) — trying next...`);
+                    break;
+                }
+
+                throw err;
             }
-            logger.info(`Vision model ${model} succeeded.`);
-            return completion;
-        } catch (err) {
-            const msg = err?.message || '';
-            const isTimeout = msg.includes('abort') || msg.includes('timeout');
-            const isNetwork = /fetch failed|ECONNRESET|ETIMEDOUT|network/i.test(msg);
-            if (isTimeout || isNetwork) {
-                logger.warn(`Model ${model} network error: ${msg.slice(0, 120)} — trying next...`);
-                lastError = err;
-                continue;
+        }
+    }
+    throw lastError || new Error('All text models are unavailable');
+}
+
+// Vision models to try in order — if one is over capacity, fall back to the next.
+// NOTE: many Groq accounts (including this one) have no vision model at all; in that
+// case analyzeImage degrades to the Gemini + heuristics path. Set GROQ_VISION_MODELS=
+// (empty) to skip the futile Groq vision attempts entirely.
+async function groqVisionRequest(messages, maxTokens = 500) {
+    const keyring = getGroqKeyring();
+    const keyCount = Math.max(1, keyring.size);
+    let currentKey = keyring.current();
+    if (!currentKey) throw new Error('GROQ_API_KEY is not configured');
+
+    const models = parseModelList(process.env.GROQ_VISION_MODELS, DEFAULT_VISION_MODELS);
+    let lastError;
+    for (const model of models) {
+        for (let keyAttempt = 0; keyAttempt < keyCount && currentKey; keyAttempt++) {
+            try {
+                logger.info(`Trying vision model via direct API: ${model} (key attempt ${keyAttempt + 1}/${keyCount})`);
+                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${currentKey}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model,
+                        messages,
+                        temperature: 0.1,
+                        max_tokens: maxTokens,
+                    }),
+                    signal: AbortSignal.timeout(60000),
+                });
+
+                if (!res.ok) {
+                    const errBody = await res.text().catch(() => '');
+                    const msg = `${res.status}: ${errBody.slice(0, 200)}`;
+
+                    // Key-level failure — quarantine the key and fail over.
+                    if (res.status === 401 || res.status === 403 || res.status === 429) {
+                        logger.warn(`Groq vision key rejected (HTTP ${res.status}) — quarantining key and failing over...`);
+                        keyring.markBad(currentKey, res.status === 429 ? undefined : GROQ_DENIED_COOLDOWN_MS);
+                        currentKey = keyring.rotate();
+                        lastError = new Error(msg);
+                        continue;
+                    }
+
+                    const noVision = /does not support image/i.test(errBody);
+                    const transient = res.status === 503 || res.status === 404 ||
+                        !errBody || /over capacity|unavailable|rate limit|too many requests|temporarily/i.test(errBody);
+                    if (noVision || transient) {
+                        // Transient or "this model can't see images" — fall through to the next model.
+                        logger.warn(`Model ${model} unavailable (${res.status}): ${msg.slice(0, 120)} — trying next...`);
+                        lastError = new Error(msg);
+                        break;
+                    }
+                    // Non-transient error (e.g. 400 invalid image data) — retrying other
+                    // models would fail identically and burn quota. Abort immediately.
+                    logger.warn(`Model ${model} returned non-transient error ${res.status}: ${msg.slice(0, 120)} — aborting vision request.`);
+                    throw new Error(`Groq API error: ${msg}`);
+                }
+
+                const completion = await res.json();
+                // Detect vision error returned as 200 OK with error text in content
+                const content = completion?.choices?.[0]?.message?.content || '';
+                if (/does not support image|cannot read|cannot process|unable to process/i.test(content)) {
+                    logger.warn(`Model ${model} returned error text in 200 response — trying next...`);
+                    lastError = new Error(content.slice(0, 200));
+                    break;
+                }
+                logger.info(`Vision model ${model} succeeded.`);
+                return completion;
+            } catch (err) {
+                const msg = err?.message || '';
+                if (/^Groq API error/.test(msg)) throw err;
+                if (isNetworkError(msg)) {
+                    logger.warn(`Model ${model} network error: ${msg.slice(0, 120)} — trying next...`);
+                    lastError = err;
+                    break;
+                }
+                // Non-transient error — re-throw immediately
+                throw err;
             }
-            // Non-transient error — re-throw immediately
-            throw err;
         }
     }
     throw lastError || new Error('All vision models are unavailable');
 }
 
 export async function analyzeImage(imageBase64, mimeType, userContext = '', originalName = '') {
-    if (!process.env.GROQ_API_KEY) {
+    if (!getGroqKeyring().current()) {
         throw new Error('GROQ_API_KEY is not configured. Set it in .env to enable image analysis.');
     }
     // Groq enforces a 4 MB limit on base64-encoded images
@@ -949,16 +1053,20 @@ Be very specific and honest about uncertainty.`
         return llmResult;
     } catch (error) {
         const detail = error?.error?.message || error?.message || 'Unknown error';
-        logger.error('Groq image analysis error:', detail, error);
+
+        // ── FALLBACK: When Groq vision is unavailable, return a result from
+        // Gemini + heuristics + local models instead of crashing.
+        const isVisionDown = /vision model|does not support image|cannot read|cannot process|unable to process|model.*not support|unavailable|rate limit|429|does not exist|do not have access|model_not_found|not found|404|decommission|deprecat/i.test(detail);
+        if (isVisionDown) {
+            logger.warn('Groq vision unavailable — falling back to Gemini + local models.');
+        } else {
+            logger.error('Groq image analysis error:', detail, error);
+        }
 
         // Safety net: if the fallback path itself throws, return a safe default
         try {
 
-        // ── FALLBACK: When Groq vision is unavailable, return a result from
-        // Gemini + heuristics + local models instead of crashing.
-        const isVisionDown = /vision model|does not support image|cannot read|cannot process|unable to process|model.*not support|unavailable|rate limit|429/i.test(detail);
         if (isVisionDown) {
-            logger.warn('Groq vision unavailable — returning degraded result from Gemini + heuristics.');
 
             // Build fallback result from available data
             const fallback = {

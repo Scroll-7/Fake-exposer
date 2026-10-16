@@ -218,7 +218,10 @@ All configuration is environment-based (see `.env.example`):
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `GROQ_API_KEY` | ✅ | — | Text + vision analysis via LLaMA 4 |
-| `GEMINI_API_KEYS` | ⭕ | — | AI image forensics. Comma-separated for rotation |
+| `GROQ_API_KEYS` | ⭕ | — | Comma-separated Groq keys for automatic failover (overrides `GROQ_API_KEY`) |
+| `GEMINI_API_KEYS` | ⭕ | — | AI image forensics. Comma-separated for automatic failover |
+
+Keys use **failover-only rotation**: the app keeps using the active key until it fails, then quarantines it and switches to the next one. A denied key (HTTP `401`/`403`) is quarantined for the rest of the day; a rate-limited key (`429`) is cooled down for 5 minutes and then returns to the pool.
 | `PORT` | ⭕ | `3001` | HTTP port |
 
 Without `GROQ_API_KEY` the server still boots and serves the UI, but analysis endpoints return a descriptive error instead of crashing.
@@ -304,7 +307,8 @@ Returns Face API availability and the list of recognizable identities. Never fai
 ├── server.js                  # Express app: routes, security, upload handling
 ├── services/
 │   ├── groq.js                # Orchestrator: 4-stage image pipeline, text analysis
-│   ├── aiDetector.js          # Gemini image forensics + key rotation
+│   ├── aiDetector.js          # Gemini image forensics
+│   ├── keyring.js             # Failover-only API-key pool (quarantine + rotate)
 │   ├── heuristics.js          # Pure rules: physique, portrait, filename
 │   ├── sportsKB.js            # Player↔club knowledge base + jersey matching
 │   ├── textDetector.js        # ZeroGPT-style 7-metric statistical detector
