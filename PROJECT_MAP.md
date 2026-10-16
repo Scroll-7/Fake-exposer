@@ -5,41 +5,47 @@
 | Layer | Technology | Version | Status |
 |-------|-----------|---------|--------|
 | Frontend | Vanilla HTML/CSS/JS | — | ✅ |
-| Backend | Node.js + Express | 4.22.x | ✅ |
+| Backend | Node.js + Express | 4.x | ✅ |
 | ML Text API | Python + FastAPI + scikit-learn | — | ✅ (port 8000) |
 | ML Image API | Python + FastAPI + ONNX Runtime | — | ✅ (port 8001) |
 | Face Recognition | Python + FastAPI + InsightFace | buffalo_l | ✅ (port 8002) |
-| Text Model | TF-IDF + Logistic Regression | 25k features | ❌ Untrained (no WELFake data) |
-| Image Model | MobileNetV2 → ONNX | 4 classes (cat/dog/humans/wild) | ❌ Untrained (no AFHQ data) |
+| Text Model | TF-IDF + Logistic Regression | 25k features | ✅ Trained — leak-free, calibrated (in-domain ROC-AUC 0.991; does not transfer to modern text) |
+| Image Model (animal) | MobileNetV2 → ONNX | — | ❌ REMOVED — no fake-news signal |
 | LLM Vision | Groq (LLaMA-4 Scout/Maverick via direct `fetch()`) | — | ✅ (SDK bypassed) |
 | LLM Text | Groq (LLaMA-3.3-70b via SDK) | — | ✅ |
 | AI Forensics | Google Gemini (2.5 Flash, 2.0 Flash) | — | ✅ |
-| AI Image Detection | Nonescape mini v0 ONNX | — | ❌ Model file missing |
+| AI Image Detection | Nonescape mini v0 ONNX | — | ✅ (valid local model; v1 re-trained head is opt-in via `NONESCAPE_MODEL`) |
 | URL Scraping | Jina Reader API | — | ✅ |
 | Web Search | DuckDuckGo HTML (fallback) | — | ⚠️ Fragile |
 
 **Service Architecture:**
 ```
-server.js (433 lines)
+server.js (399 lines)
 ├── services/
-│   ├── groq.js          (975 lines)  — Core orchestrator + LLM calls + fallback
-│   ├── textDetector.js  (537 lines)  — ZeroGPT-style 7-metric ensemble
-│   ├── aiDetector.js    (302 lines)  — Gemini AI image forensics
-│   ├── sportsKB.js      (395 lines)  — Player/club KB + jersey matching
-│   ├── scraper.js       (132 lines)  — URL scraping (Jina) + DDG search
-│   ├── heuristics.js    (93 lines)   — Pure rules: physique, portrait, filename
-│   ├── retry.js         (29 lines)   — Exponential backoff utility
-│   └── logger.js        (17 lines)   — Structured logging (ISO ts + 4 levels)
+│   ├── groq.js          (1060 lines) — Core orchestrator + LLM calls + fallback
+│   ├── textDetector.js  (470 lines)  — ZeroGPT-style 7-metric ensemble
+│   ├── aiDetector.js    (274 lines)  — Gemini AI image forensics
+│   ├── sportsKB.js      (384 lines)  — Player/club KB + jersey matching
+│   ├── scraper.js       (262 lines)  — URL scraping (Jina) + DDG search
+│   ├── heuristics.js    (80 lines)   — Pure rules: physique, portrait, filename
+│   ├── retry.js         (28 lines)   — Exponential backoff utility
+│   └── logger.js        (21 lines)   — Structured logging (ISO ts + 4 levels)
 ├── python APIs (optional — run manually, not auto-spawned):
-│   ├── python_api.py    (60 lines)   — Text classification (calibrated TF-IDF + LR)
-│   ├── image_api.py     (~90 lines)  — Nonescape ONNX AI-image detection
-│   └── face_api.py      (114 lines)  — InsightFace recognition
-├── test/
+│   ├── python_api.py    (55 lines)   — Text classification (calibrated TF-IDF + LR)
+│   ├── image_api.py     (65 lines)   — Nonescape ONNX AI-image detection
+│   └── face_api.py      (102 lines)  — InsightFace recognition
+├── test/  (172 tests total)
+│   ├── sportsKB.test.js    — 49 tests
+│   ├── scraper.test.js     — 30 tests
+│   ├── groq.test.js        — 22 tests
+│   ├── aiDetector.test.js  — 18 tests
+│   ├── server.test.js      — 17 integration tests
 │   ├── heuristics.test.js  — 11 tests
-│   ├── sportsKB.test.js    — 12 tests
-│   ├── scraper.test.js     — 7 tests
-│   ├── groq.test.js        — 2 tests
-│   └── server.test.js      — 7 integration tests
+│   ├── logger.test.js      — 10 tests
+│   ├── retry.test.js       — 8 tests
+│   └── textDetector.test.js — 7 tests
+├── eval/                    — Harness: dedupe, split, metrics, report, image_eval,
+│                              fetch_cifake, make_split (32 self-tests, no data)
 └── public/                  — Static frontend (Text, URL, Image tabs)
 ```
 
@@ -86,7 +92,7 @@ POST /api/analyze/image (multipart: file + optional context)
   ├─ Heuristics (heuristics.js) — physique, portrait, filename
   ├─ Groq Vision Step 3 — full analysis with all context + nonescapeNote
   ├─ POST-STEP-3: Re-check jersey mismatch on LLM output + userContext
-  ├─ MERGE: AI override, Nonescape cap (40 if >65%), jersey mismatch cap,
+  ├─ MERGE: AI override, Nonescape high-confidence cap (≥0.9), jersey mismatch cap,
   │         heuristic caps, unverifiable cap, portrait penalty
   ├─ ML confidence gate: local text model caps at 50 only when calibrated p(fake) ≥ 0.8
   ├─ Cleanup: delete temp file
@@ -121,14 +127,14 @@ POST /api/detect/text { text }
 +-------------+     +----------------------------------------------------+
 |   Browser   |<-->|           Node.js (port 3001)                      |
 | index.html  |    |  server.js                                         |
-| app.js      |    |  +-- services/groq.js      (orchestrator, 975L)     |
-+-------------+    |  +-- services/textDetector.js (AI text, 537L)      |
-                   |  +-- services/aiDetector.js (Gemini, 302L)         |
-                   |  +-- services/sportsKB.js   (KB + matching, 395L)  |
-                   |  +-- services/scraper.js    (web fetching, 132L)   |
-                   |  +-- services/heuristics.js (pure rules, 93L)      |
-                   |  +-- services/retry.js      (utility, 29L)         |
-                   |  +-- services/logger.js     (logging, 17L)         |
+| app.js      |    |  +-- services/groq.js      (orchestrator, 1060L)    |
++-------------+    |  +-- services/textDetector.js (AI text, 470L)      |
+                   |  +-- services/aiDetector.js (Gemini, 274L)         |
+                   |  +-- services/sportsKB.js   (KB + matching, 384L)  |
+                   |  +-- services/scraper.js    (web fetching, 262L)   |
+                   |  +-- services/heuristics.js (pure rules, 80L)      |
+                   |  +-- services/retry.js      (utility, 28L)         |
+                   |  +-- services/logger.js     (logging, 21L)         |
                    +---------------------------+------------------------+
                                                |
              +---------------------------------+-------------------+
@@ -159,8 +165,8 @@ POST /api/detect/text { text }
 ### Current Issues (External Blockers)
 | Item | Location | Impact | Action Needed |
 |------|----------|--------|---------------|
-| `WELFake_Dataset.csv` missing | Root | Text model not trained | Download from Kaggle and place in root |
-| `archive.zip` / `humans.zip` missing | Root | Image model not trained | Download AFHQ + humans zip |
+| `WELFake_Dataset.csv` not in root | Root | Cannot re-run `eval.report` or retrain the text model (the shipped model still works) | Download from Kaggle — see `eval/README.md` |
+| Sports-realistic labelled set | — | The only distribution that predicts production behaviour | Build ~50 images/class with provenance labels (see `eval/README.md`, Phase 3) |
 
 ### Resolved Items ✅
 | Item | Resolution |
@@ -295,3 +301,10 @@ POST /api/detect/text { text }
 | **M41** | **Add structured async logger** | ✅ DONE | `services/logger.js` (20 lines) with ISO timestamps + 4 levels. Wired into server.js, groq.js, aiDetector.js, scraper.js. All `console.*` calls replaced project-wide. 6 new tests. |
 | **M42** | **Create `.env.example`** | ✅ DONE | Template without real keys |
 | **M43** | **Fix server test timeout (trainer spawn)** | ✅ DONE | Auto-trainer spawn guarded by `NODE_ENV !== 'test'` |
+| **M44** | **Repair broken Nonescape ONNX + unify preprocessing** | ✅ DONE | The "ONNX" file was actually safetensors (`INVALID_PROTOBUF`), so the local image detector silently did nothing. Added `bin/convert-nonescape.py` (reconstruct `efficientnet_v2_s` → `Linear(1024,2)`, export logits), rewrote `bin/download-models.ps1`, and shared `nonescape_preprocess.py` (aspect-preserving resize → center-crop 224 → JPEG q100 → ImageNet). Runtime + eval now preprocess identically; real photos score low (≈0.00–0.05). |
+| **M45** | **Leak-free text evaluation + honesty pass** | ✅ DONE | `docs/eval-welfake.md` records the dedup/group-split/calibration results (ROC-AUC 0.991, ECE 0.8%); README softened the local-model claims and linked the report. |
+| **M46** | **Image evaluation harness + CIFAKE benchmark** | ✅ DONE | Added `eval/image_eval.py`, `eval/fetch_cifake.py` (+ `make_split.py`), `docs/eval-image.md`. Measured honestly: v0 is near chance on 32px CIFAKE (ROC-AUC 0.63) — a domain-shift artifact. |
+| **M47** | **Nonescape demoted to advisory, then a high-confidence cap** | ✅ DONE | Removed the catastrophic `>0.65`/`>0.5` score caps (they fired on ~67–97% of real images). After the realistic benchmark, reinstated a cap **only at ≥0.9** (≈94% precision, ~3% real-image FP in both domains). `nonescapeAdvisory()` is a pure, tested function. |
+| **M48** | **Realistic 512px benchmark** | ✅ DONE | The AI-vs-Human dataset reveals the model is genuinely strong on realistic images (ROC-AUC 0.89, ~80% accuracy) and only fails on low-res/OOD. Documented threshold sweep + policy in `docs/eval-image.md`. |
+| **M49** | **Linear-probe image head retraining** | ✅ DONE | `bin/probe-nonescape.py` freezes the backbone, caches features, and re-fits the head (CPU-feasible). Same-domain ROC-AUC 0.89 → 0.97, ECE 0.088 → 0.018, unchanged real-photo FPs, but loses the weak cross-domain signal — so v0 stays the default and v1 is opt-in via `NONESCAPE_MODEL` (`nonescape_model.py`). |
+| **M50** | **Docs truth pass** | ✅ DONE | README + this map refreshed (test counts 172 / eval 32, current line counts, resolved items, changelog). |

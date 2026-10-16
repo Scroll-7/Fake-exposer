@@ -150,7 +150,7 @@ vision + text   image forensics (player↔club KB)
 **ML services** — Python · FastAPI · Uvicorn · scikit-learn · ONNX Runtime · InsightFace (buffalo_l)
 **Frontend** — vanilla HTML/CSS/JS, no framework, no bundler
 **Security** — helmet (CSP) · CORS · express-rate-limit · hpp · multer
-**Testing** — `node:test` (99 tests) · ESLint 10 · Playwright (E2E)
+**Testing** — `node:test` (172 tests) · ESLint 10 · Playwright (E2E) · Python `unittest` eval harness (32 tests)
 **CI** — GitHub Actions
 
 **Dependencies are deliberately minimal** (11 production packages). There is no LangChain, no agent framework, and no vector database: the orchestration is ~2 direct LLM calls, and a framework would add weight while hiding the provider-specific behavior (raw status codes, per-model fallback) this system depends on.
@@ -314,12 +314,17 @@ Returns Face API availability and the list of recognizable identities. Never fai
 ├── python_api.py              # :8000  calibrated TF-IDF + Logistic Regression text classifier
 ├── image_api.py               # :8001  Nonescape ONNX AI-image detection
 ├── face_api.py                # :8002  InsightFace recognition
+├── nonescape_preprocess.py    # Shared image preprocessing (runtime + eval, identical)
+├── nonescape_model.py         # Model-path resolver (NONESCAPE_MODEL override)
 ├── auto_train.py              # Trains the text model (leak-free + calibrated)
-├── eval/                      # Evaluation harness (dedupe, split, metrics, report)
+├── eval/                      # Evaluation harness (dedupe, split, metrics, report,
+│                              #   image_eval, fetch_cifake, make_split)
+├── docs/                      # eval-welfake.md, eval-image.md
 ├── known_faces/               # Reference photos (firstname_lastname.jpg)
 ├── public/                    # Frontend (no build step)
 ├── test/                      # node:test suites + Playwright E2E
-├── bin/                       # download-face.py, download-models.ps1
+├── bin/                       # download-face.py, download-models.ps1,
+│                              #   convert-nonescape.py, probe-nonescape.py
 ├── PROJECT_MAP.md             # Detailed system map + changelog
 └── requirements.txt
 ```
@@ -343,10 +348,13 @@ Returns Face API availability and the list of recognizable identities. Never fai
 ## Testing
 
 ```bash
-npm test          # 99 tests (full suite: heuristics, sportsKB, groq, server, scraper, text)
+npm test          # 172 tests (full suite: heuristics, sportsKB, groq, server, scraper, text, logger, retry, aiDetector)
 npm run lint      # ESLint
 npm run test:unit # core unit suites only (heuristics, sportsKB, groq)
 npm run test:e2e  # Playwright (requires a running server)
+
+# Evaluation-harness self-tests (no dataset needed)
+python -m unittest eval.test_eval -v
 ```
 
 Current suite covers: heuristics (physique/portrait/filename), the sports knowledge base, scraper fallbacks, the SSRF guard, text detection, Groq error paths, and Express integration (upload validation, rate limits, error handling).
@@ -382,6 +390,8 @@ What the harness enforces:
 - **Model card** — `fake_news_model.card.json` records the label map, dedup stats, split seed, and measured metrics.
 
 > **Reality check.** WELFake is 2016–2018 US political news. The text model does **not** generalise to modern sports or multimodal content, and its predictive tokens are dominated by source/formatting artifacts (CMS markers, outlet bylines). It is treated as a **weak, calibrated signal** only: it can cap a score at 50 **only** when its calibrated fake-probability is ≥ 0.8, and otherwise abstains. The detection quality of this project comes from the LLM calls and the deterministic heuristics, not from this classifier.
+
+The local **image** model is measured the same way ([full report](docs/eval-image.md)): strong on realistic images (ROC-AUC 0.89, ~80% accuracy) but near chance on low-resolution/out-of-distribution inputs, so it only caps the score at high confidence (≥ 0.9) and is advisory below. Its final layer can be re-trained on any labelled image set with `bin/probe-nonescape.py` — a frozen-feature linear probe (ROC-AUC 0.89 → 0.97 same-domain, at the cost of the weak cross-domain signal); enable it via `NONESCAPE_MODEL`.
 
 ---
 
