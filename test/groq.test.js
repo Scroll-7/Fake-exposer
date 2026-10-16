@@ -193,3 +193,168 @@ describe('detectSportsSuspicion', () => {
         assert.equal(detectSportsSuspicion(null, null, SPORTS_DESC, () => 'Barcelona'), null);
     });
 });
+
+// ── analyzeImage: mocked network pipeline ────────────────────────────────────
+// analyzeImage orchestrates 4 independent network calls (local Face API,
+// local Nonescape API, Gemini, and the Groq vision model twice). We mock
+// global fetch so the *pure* post-processing — heuristic caps, jersey match,
+// Nonescape cap, and the Gemini AI-override priority — can be exercised without
+// any keys or running services.
+describe('analyzeImage (mocked network pipeline)', () => {
+    const originalGroqKey = process.env.GROQ_API_KEY;
+    const originalGeminiKeys = process.env.GEMINI_API_KEYS;
+    const originalFetch = globalThis.fetch;
+    let analyzeImage;
+
+    const baseAnalysis = () => ({
+        credibility_score: 90,
+        verdict: 'Highly Credible',
+        bias: 'None',
+        sentiment: 'Neutral',
+        red_flags: [],
+        green_flags: ['real world context'],
+        summary: 'looks authentic',
+        recommendations: [],
+        is_trusted_source: false,
+        trusted_source_name: '',
+    });
+
+    const ok = (obj, status = 200) => ({
+        ok: true,
+        status,
+        json: async () => obj,
+        text: async () => JSON.stringify(obj),
+    });
+
+    function mockFetch({ description = '', analysis, gemini = null, face = null, nonescape = 0.05 } = {}) {
+        const body = analysis || baseAnalysis();
+        return async (url, init = {}) => {
+            const u = String(url);
+            if (u.includes(':8002/recognize')) return ok({ player: face });
+            if (u.includes(':8001/detect_ai')) return ok({ ai_probability: nonescape });
+            if (u.includes('generativelanguage.googleapis.com')) {
+                return ok({ candidates: [{ content: { parts: [{ text: JSON.stringify(gemini) }] } }] });
+            }
+            if (u.includes('api.groq.com')) {
+                const payload = JSON.parse(init.body);
+                const content = payload.max_tokens === 250 ? description : JSON.stringify(body);
+                return ok({ choices: [{ message: { content } }] });
+            }
+            throw new Error(`Unexpected fetch in test: ${u}`);
+        };
+    }
+
+    async function withGeminiKey(fn) {
+        const prev = process.env.GEMINI_API_KEYS;
+        process.env.GEMINI_API_KEYS = 'test-key';
+        try { return await fn(); } finally { process.env.GEMINI_API_KEYS = prev; }
+    }
+
+    before(async () => {
+        process.env.GROQ_API_KEY = 'test-key';
+        process.env.GEMINI_API_KEYS = '';
+        ({ analyzeImage } = await import('../services/groq.js'));
+    });
+
+    after(() => {
+        process.env.GROQ_API_KEY = originalGroqKey;
+        process.env.GEMINI_API_KEYS = originalGeminiKeys;
+        globalThis.fetch = originalFetch;
+    });
+
+    it('passes the LLM result through untouched when no signal fires', async () => {
+        globalThis.fetch = mockFetch();
+        const r = await analyzeImage('dGVzdA==', 'image/png');
+        assert.equal(r.credibility_score, 90);
+        assert.equal(r.verdict, 'Highly Credible');
+    });
+
+    it('applies the portrait heuristic penalty on a studio-portrait description', async () => {
+        globalThis.fetch = mockFetch({
+            description: 'A professional portrait of a young man facing the camera against a plain grey background. Clear skin, studio lighting, sharp and photorealistic.',
+        });
+        const r = await analyzeImage('dGVzdA==', 'image/png');
+        assert.equal(r.credibility_score, 50);
+        assert.ok(r.red_flags.some(f => /portrait signature/i.test(f)));
+    });
+
+    it('hard-caps the score for an extreme physique in a casual setting', async () => {
+        globalThis.fetch = mockFetch({
+            description: 'A shredded bodybuilder poses with a six-pack in a bathroom mirror.',
+        });
+        const r = await analyzeImage('dGVzdA==', 'image/png');
+        assert.equal(r.credibility_score, 20);
+        assert.match(r.verdict, /Likely AI-Enhanced/);
+    });
+
+    it('hard-caps the score when the filename reveals an AI tool', async () => {
+        globalThis.fetch = mockFetch();
+        const r = await analyzeImage('dGVzdA==', 'image/png', '', 'sunset_midjourney.png');
+        assert.equal(r.credibility_score, 5);
+        assert.match(r.verdict, /Confirmed AI-Generated/);
+    });
+
+    it('hard-caps the score for a known jersey mismatch', async () => {
+        globalThis.fetch = mockFetch();
+        const r = await analyzeImage('dGVzdA==', 'image/png', 'Lionel Messi wearing a Real Madrid jersey');
+        assert.equal(r.credibility_score, 8);
+        assert.match(r.verdict, /never played for/);
+    });
+
+    it('caps an unverifiable identity (team jersey, no player name)', async () => {
+        globalThis.fetch = mockFetch();
+        const r = await analyzeImage('dGVzdA==', 'image/png', 'A man wearing a Barcelona jersey.');
+        assert.equal(r.credibility_score, 15);
+        assert.match(r.verdict, /Unverifiable/);
+    });
+
+    it('caps an unidentifiable sports image', async () => {
+        globalThis.fetch = mockFetch({
+            description: 'A football player celebrates a goal at the stadium during the match.',
+        });
+        const r = await analyzeImage('dGVzdA==', 'image/png');
+        assert.equal(r.credibility_score, 55);
+        assert.match(r.verdict, /Unverifiable — Sports/);
+    });
+
+    it('caps the score when the Nonescape model is >= 0.9 confident', async () => {
+        globalThis.fetch = mockFetch({ nonescape: 0.95 });
+        const r = await analyzeImage('dGVzdA==', 'image/png');
+        assert.equal(r.credibility_score, 30);
+        assert.match(r.verdict, /ML Detector/);
+        assert.ok(r.red_flags.some(f => /95% AI probability/.test(f)));
+    });
+
+    it('does not cap on a moderate Nonescape probability', async () => {
+        globalThis.fetch = mockFetch({ nonescape: 0.65 });
+        const r = await analyzeImage('dGVzdA==', 'image/png');
+        assert.equal(r.credibility_score, 90);
+    });
+
+    it('lets a Gemini hard AI override take priority over every other cap', async () => {
+        await withGeminiKey(async () => {
+            const analysis = { ...baseAnalysis(), is_trusted_source: true, trusted_source_name: 'Reuters' };
+            globalThis.fetch = mockFetch({
+                analysis,
+                gemini: { image_category: 'Other', ai_probability: 90, verdict: 'AI-Generated', confidence: 'High', artifacts_detected: ['x'], reasoning: 'r', description: '' },
+            });
+            const r = await analyzeImage('dGVzdA==', 'image/png', 'Lionel Messi wearing a Real Madrid jersey');
+            assert.equal(r.credibility_score, 10);
+            assert.match(r.verdict, /AI-Generated \/ Fake/);
+            assert.equal(r.is_trusted_source, false);
+            assert.equal(r.trusted_source_name, null);
+        });
+    });
+
+    it('softens the score but keeps the verdict for a mid-range Gemini signal', async () => {
+        await withGeminiKey(async () => {
+            globalThis.fetch = mockFetch({
+                gemini: { image_category: 'Other', ai_probability: 30, verdict: 'Suspicious', confidence: 'High', artifacts_detected: [], reasoning: '', description: '' },
+            });
+            const r = await analyzeImage('dGVzdA==', 'image/png');
+            assert.equal(r.credibility_score, 72);
+            assert.equal(r.verdict, 'Highly Credible');
+            assert.ok(r.red_flags.some(f => /Gemini AI Detector/.test(f)));
+        });
+    });
+});
