@@ -48,17 +48,17 @@ This project attacks that specific failure mode with three things a single LLM c
 | **ZeroGPT-style text detector** | 7-metric local statistical AI-text detector. **No API key, no network, no cost.** |
 | **Face ID** | InsightFace recognition of 32 known public figures, wired into a jersey-mismatch knowledge base. |
 | **Celebrity context** | Known roles, organizations, and typical settings for each public figure, to flag out-of-context imagery. |
-| **Local AI-image detector** | A pretrained ONNX classifier (Nonescape Mini v0) scores image-level AI probability as a **weak, low-confidence** signal (see measurement note below). |
+| **Local AI-image detector** | A pretrained ONNX classifier (Nonescape Mini v0) scores image-level AI probability — a real signal on realistic images but domain-sensitive; only a high-confidence (≥0.9) result affects the score (see measurement note below). |
 | **Trusted-source boost** | Verified/prominent sources (Reuters, BBC, Sky Sports, …) receive a documented +50 credibility boost. |
 | **Multi-provider fallback** | 3 Groq vision models + 4 Gemini models with API-key rotation, so one provider being down or rate-limited doesn't break analysis. |
 
 > **Measured honestly.** Both local models are evaluated leak-free and in the
 > open under `eval/`: see `docs/eval-welfake.md` (text) and
-> `docs/eval-image.md` (image). Two findings worth knowing up front: the text
-> classifier is a strong *in-domain* signal (2016–2018 US politics) that does
-> **not** transfer cleanly to modern text; and the Nonescape image model is near
-> chance on out-of-distribution images (CIFAKE ROC-AUC 0.63), so it is a weak
-> signal — not a confident "AI-generated" verdict.
+> `docs/eval-image.md` (image). The text classifier is a strong *in-domain*
+> signal (2016–2018 US politics) that does **not** transfer cleanly to modern
+> text. The Nonescape image model is strong on realistic images (ROC-AUC 0.89)
+> but near chance on low-resolution inputs, so it only caps the score at high
+> confidence (≥ 0.9) and is advisory below that.
 
 ---
 

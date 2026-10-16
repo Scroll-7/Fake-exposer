@@ -85,7 +85,7 @@ describe('applyLocalMlSignal (ML confidence gate)', () => {
     });
 });
 
-describe('nonescapeAdvisory (weak-signal wrapper)', () => {
+describe('nonescapeAdvisory (advisory + high-confidence cap)', () => {
     it('returns an empty advisory for missing/invalid probabilities', async () => {
         const { nonescapeAdvisory } = await import('../services/groq.js');
         for (const v of [undefined, null, NaN]) {
@@ -93,39 +93,45 @@ describe('nonescapeAdvisory (weak-signal wrapper)', () => {
             assert.equal(a.level, null);
             assert.equal(a.note, '');
             assert.equal(a.redFlag, '');
+            assert.equal(a.cap, false);
         }
     });
 
-    it('marks >0.7 as high but frames it as a weak signal (no hard verdict)', async () => {
+    it('caps only above 0.9 and calls it high confidence', async () => {
         const { nonescapeAdvisory } = await import('../services/groq.js');
-        const a = nonescapeAdvisory(0.98);
-        assert.equal(a.level, 'high');
-        assert.match(a.note, /weak, low-confidence signal/);
-        assert.match(a.redFlag, /not a hard verdict/);
+        const hi = nonescapeAdvisory(0.95);
+        assert.equal(hi.level, 'high');
+        assert.equal(hi.cap, true);
+        assert.match(hi.note, /high confidence/);
+
+        const edge = nonescapeAdvisory(0.9);
+        assert.equal(edge.cap, false); // strict inequality
     });
 
-    it('marks 0.5-0.7 as moderate with no red flag', async () => {
+    it('does not cap in the moderate band and warns about domain sensitivity', async () => {
         const { nonescapeAdvisory } = await import('../services/groq.js');
-        const a = nonescapeAdvisory(0.6);
+        const a = nonescapeAdvisory(0.65);
         assert.equal(a.level, 'moderate');
+        assert.equal(a.cap, false);
         assert.equal(a.redFlag, '');
-        assert.match(a.note, /weak signal/);
+        assert.match(a.note, /domain-sensitive/);
     });
 
-    it('marks <0.3 as pass', async () => {
+    it('marks <0.3 as pass with no cap', async () => {
         const { nonescapeAdvisory } = await import('../services/groq.js');
         const a = nonescapeAdvisory(0.05);
         assert.equal(a.level, 'pass');
+        assert.equal(a.cap, false);
         assert.match(a.note, /nothing suspicious/);
-        assert.equal(a.redFlag, '');
     });
 
-    it('returns a neutral advisory in the 0.3-0.5 ambiguous band', async () => {
+    it('returns a neutral (non-capping) advisory in the 0.3-0.5 band', async () => {
         const { nonescapeAdvisory } = await import('../services/groq.js');
         const a = nonescapeAdvisory(0.4);
         assert.equal(a.level, null);
         assert.equal(a.note, '');
         assert.equal(a.redFlag, '');
+        assert.equal(a.cap, false);
     });
 });
 

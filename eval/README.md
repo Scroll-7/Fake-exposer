@@ -19,6 +19,7 @@ it with leak-free, multi-metric measurement.
 | `image_eval.py` | The local Nonescape AI-image ONNX model | **free, unlimited** |
 | `pipeline_eval.py` | The full `/api/analyze/*` pipeline end-to-end | free-tier API calls |
 | `dedupe.py` / `split.py` / `metrics.py` | The reusable harness | free |
+| `fetch_cifake.py` / `make_split.py` | Fetch/build balanced image splits | free |
 | `test_eval.py` | Self-tests for the harness (no data needed) | free |
 
 ## Quick runs
@@ -79,9 +80,11 @@ normalise. The earlier runtime code forced a 256×256 square, which distorted th
 aspect ratio and produced nonsensical probabilities (a real photo scored
 P(AI)=0.99); with the fix real photos score low (≈0.00–0.05).
 
-Measured honestly on CIFAKE, the model is still only **ROC-AUC 0.63** and
-miscalibrated (it flags ~98% of real images as AI) — read it as a weak signal,
-not a verdict. Full numbers and caveats: `docs/eval-image.md`.
+Measured honestly on two benchmarks: on realistic 512px images it is strong
+(ROC-AUC 0.89, ~80% accuracy), but on 32×32 CIFAKE it is near chance
+(ROC-AUC 0.63) — a domain-shift artifact. The pipeline therefore only caps the
+score at high confidence (≥0.9) and treats it as advisory below. Full numbers
+and caveats: `docs/eval-image.md`.
 
 
 ### A real sports set (the north star — Phase 3 in the plan)

@@ -6,6 +6,7 @@ node_modules/
 *.csv
 dataset_auto_train_tmp/
 eval/data/
+archive*/
 
 # ML Models
 *.pkl

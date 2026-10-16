@@ -287,5 +287,41 @@ class TestFetchCifake(unittest.TestCase):
                 self.assertEqual(f.read(), raw)
 
 
+class TestMakeSplit(unittest.TestCase):
+    def test_label_to_dir_mapping(self):
+        from eval.make_split import label_to_dir
+
+        self.assertEqual(label_to_dir("0", 0), "real")
+        self.assertEqual(label_to_dir("1", 0), "ai")
+        self.assertEqual(label_to_dir("1", "1"), "real")
+        self.assertEqual(label_to_dir("0", "1"), "ai")
+
+    def test_is_image_filters_by_extension(self):
+        from eval.make_split import is_image
+
+        self.assertTrue(is_image("a/b.JPG"))
+        self.assertTrue(is_image("x.webp"))
+        self.assertFalse(is_image("note.txt"))
+        self.assertFalse(is_image("noext"))
+
+    def test_builds_balanced_split_from_csv(self):
+        from eval.make_split import main
+
+        root = tempfile.mkdtemp()
+        for name in ["0.jpg", "1.jpg", "2.jpg", "3.jpg"]:
+            open(os.path.join(root, name), "wb").close()
+        csv_path = os.path.join(root, "labels.csv")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write("file_name,label\n0.jpg,0\n1.jpg,1\n2.jpg,0\n3.jpg,1\n")
+        out = os.path.join(root, "out")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = main(["--csv", csv_path, "--root", root, "--out", out, "--limit", "1"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(os.listdir(os.path.join(out, "real"))), 1)
+        self.assertEqual(len(os.listdir(os.path.join(out, "ai"))), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

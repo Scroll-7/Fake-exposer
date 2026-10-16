@@ -92,34 +92,39 @@ export function applyLocalMlSignal(result, ml, gate = ML_CONFIDENCE_GATE) {
 }
 
 /**
- * Advisory wrapper for the local Nonescape image model.
+ * Advisory + high-confidence cap for the local Nonescape image model.
  *
- * That model is a weak, low-confidence signal: measured on CIFAKE it is near
- * chance (ROC-AUC 0.63), flags most *real* images as AI (97% above 0.5, 67%
- * above 0.65), and its verdict flips with input domain. So it is advisory only
- * — it must never hard-cap the score or override the LLM verdict. See
- * docs/eval-image.md.
+ * The model is domain-sensitive. On the realistic 512px AI-vs-human benchmark
+ * it is strong (ROC-AUC 0.89; ~94% precision above 0.9), but on low-resolution
+ * 32px CIFAKE it is near chance (ROC-AUC 0.63) and flags most real images as AI.
+ * So:
+ *   - prob > 0.9 -> `cap: true` (high confidence; ~94% precision, ~3% FP on
+ *     real images in *both* benchmarks)
+ *   - otherwise  -> advisory only, never caps the score
+ * See docs/eval-image.md.
  *
- * Pure and exported for unit testing. Returns `{ level, note, redFlag }`.
+ * Pure and exported for unit testing. Returns `{ level, note, redFlag, cap }`.
  */
 export function nonescapeAdvisory(prob) {
-    const empty = { level: null, note: '', redFlag: '' };
+    const empty = { level: null, note: '', redFlag: '', cap: false };
     if (prob === undefined || prob === null || Number.isNaN(prob)) return empty;
     const pct = Math.round(prob * 100);
-    const caveat =
-        'This is a weak, low-confidence signal (the local model is biased toward "AI" and unreliable off its training distribution) — treat it as supporting evidence only, not proof.';
-    if (prob > 0.7) {
+    const weak =
+        'This local model is domain-sensitive (near chance on low-resolution images), so treat it as supporting evidence only — not proof.';
+    if (prob > 0.9) {
         return {
             level: 'high',
-            note: `\n⚠️ LOCAL AI-IMAGE MODEL (weak signal): ${pct}% AI probability. ${caveat}`,
-            redFlag: `🤖 Local AI-image model: ${pct}% AI probability (weak signal — not a hard verdict)`,
+            note: `\n⚠️ LOCAL AI-IMAGE MODEL: ${pct}% AI probability (high confidence — this level is ~94% precise on real vs AI images).`,
+            redFlag: `🤖 Local AI-image model: ${pct}% AI probability (high confidence)`,
+            cap: true,
         };
     }
     if (prob > 0.5) {
         return {
             level: 'moderate',
-            note: `\n⚠️ LOCAL AI-IMAGE MODEL (weak signal): ${pct}% AI probability. ${caveat}`,
+            note: `\n⚠️ LOCAL AI-IMAGE MODEL (weak signal): ${pct}% AI probability. ${weak}`,
             redFlag: '',
+            cap: false,
         };
     }
     if (prob < 0.3) {
@@ -127,6 +132,7 @@ export function nonescapeAdvisory(prob) {
             level: 'pass',
             note: `\n✅ LOCAL AI-IMAGE MODEL (weak signal): only ${pct}% AI probability — the model sees nothing suspicious.`,
             redFlag: '',
+            cap: false,
         };
     }
     return empty;
@@ -919,11 +925,26 @@ Be very specific and honest about uncertainty.`
             };
         }
 
-        // The Nonescape hard cap was deliberately removed. The model is near
-        // chance on out-of-distribution images (CIFAKE ROC-AUC 0.63) and flags
-        // most real images as AI (97% above 0.5, 67% above 0.65), so it is
-        // advisory only and must not override the LLM verdict. See
-        // nonescapeAdvisory() and docs/eval-image.md.
+        // ── NONESCAPE HIGH-CONFIDENCE AI CAP (>= 0.9) ──
+        // Only a very high probability caps the score. The model is
+        // domain-sensitive and unreliable below this (see nonescapeAdvisory and
+        // docs/eval-image.md), but at >= 0.9 it is ~94% precise with ~3% false
+        // positives on real images across two independent benchmarks.
+        if (nonescapeInfo.cap && (llmResult.credibility_score ?? 100) > 40) {
+            const pct = Math.round(nonescapeAiProb * 100);
+            logger.warn(`Nonescape high-confidence AI cap: ${pct}% — score ${llmResult.credibility_score} -> 30`);
+            return {
+                ...llmResult,
+                credibility_score: 30,
+                verdict: 'Likely AI-Generated (ML Detector)',
+                red_flags: [
+                    `🤖 Local AI-image model: ${pct}% AI probability (high confidence)`,
+                    ...(llmResult.red_flags || []),
+                ],
+                green_flags: [],
+                summary: `AI-image model flagged this image with high confidence (${pct}%). ${llmResult.summary || ''}`.trim(),
+            };
+        }
 
         return llmResult;
     } catch (error) {
