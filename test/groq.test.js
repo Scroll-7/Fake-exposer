@@ -206,6 +206,7 @@ describe('analyzeImage (mocked network pipeline)', () => {
     const originalVisionModels = process.env.GROQ_VISION_MODELS;
     const originalFetch = globalThis.fetch;
     let analyzeImage;
+    let analyzeContent;
     let resetGroqKeyring;
 
     const baseAnalysis = () => ({
@@ -256,7 +257,7 @@ describe('analyzeImage (mocked network pipeline)', () => {
         process.env.GROQ_API_KEY = 'test-key';
         process.env.GEMINI_API_KEYS = '';
         process.env.GROQ_VISION_MODELS = 'mock-vision-model';
-        ({ analyzeImage, resetGroqKeyring } = await import('../services/groq.js'));
+        ({ analyzeImage, analyzeContent, resetGroqKeyring } = await import('../services/groq.js'));
     });
 
     after(() => {
@@ -363,7 +364,7 @@ describe('analyzeImage (mocked network pipeline)', () => {
         });
     });
 
-    it('fails over to the next Groq key when the first is denied (403)', async () => {
+    it('fails over to the next Groq key when the vision key is denied (403)', async () => {
         const prevKeys = process.env.GROQ_API_KEYS;
         process.env.GROQ_API_KEYS = 'gk1,gk2';
         resetGroqKeyring();
@@ -392,6 +393,41 @@ describe('analyzeImage (mocked network pipeline)', () => {
         } finally {
             if (prevKeys === undefined) delete process.env.GROQ_API_KEYS;
             else process.env.GROQ_API_KEYS = prevKeys;
+            resetGroqKeyring();
+        }
+    });
+
+    it('fails over to the next Groq key when the text key is denied (403)', async () => {
+        const prevKeys = process.env.GROQ_API_KEYS;
+        const prevTextModels = process.env.GROQ_TEXT_MODELS;
+        process.env.GROQ_API_KEYS = 'tk1,tk2';
+        process.env.GROQ_TEXT_MODELS = 'mock-text-model';
+        resetGroqKeyring();
+        const seenAuth = [];
+        const ddgHtml = '<td class="result__snippet">The World Health Organization declared COVID-19 a global pandemic on March 11, 2020, a widely reported public-health milestone.</td>';
+        globalThis.fetch = (url, init = {}) => {
+            const u = String(url);
+            if (u.includes('duckduckgo.com')) return Promise.resolve({ ok: true, status: 200, text: async () => ddgHtml });
+            if (u.includes('api.groq.com')) {
+                const auth = init.headers?.Authorization;
+                seenAuth.push(auth);
+                if (auth === 'Bearer tk1') {
+                    return Promise.resolve({ ok: false, status: 403, text: async () => 'denied', json: async () => ({}) });
+                }
+                return Promise.resolve(ok({ choices: [{ message: { content: JSON.stringify(baseAnalysis()) } }] }));
+            }
+            throw new Error(`Unexpected fetch in test: ${u}`);
+        };
+        try {
+            const r = await analyzeContent('The World Health Organization declared COVID-19 a global pandemic on March 11 2020 according to official public health records and news reports from around the world that day.');
+            assert.equal(seenAuth[0], 'Bearer tk1');
+            assert.equal(seenAuth[1], 'Bearer tk2');
+            assert.equal(typeof r.credibility_score, 'number');
+        } finally {
+            if (prevKeys === undefined) delete process.env.GROQ_API_KEYS;
+            else process.env.GROQ_API_KEYS = prevKeys;
+            if (prevTextModels === undefined) delete process.env.GROQ_TEXT_MODELS;
+            else process.env.GROQ_TEXT_MODELS = prevTextModels;
             resetGroqKeyring();
         }
     });

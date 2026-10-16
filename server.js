@@ -34,7 +34,6 @@ if (!process.env.GROQ_API_KEY) {
     logger.warn('GROQ_API_KEY is not set. Text/image analysis via Groq will be unavailable.');
     logger.warn('   The server will still serve static files and Python ML APIs.');
     logger.warn('   Set GROQ_API_KEY in .env to enable full analysis features.');
-    process.env.GROQ_API_KEY = ''; // ensure it's defined (empty) so groq-sdk doesn't throw on construction
 }
 
 const app = express();

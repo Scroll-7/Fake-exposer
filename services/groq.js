@@ -1,4 +1,3 @@
-import Groq from 'groq-sdk';
 import dotenv from 'dotenv';
 import FormData from 'form-data';
 import { detectAiImage, computeAiOverride } from './aiDetector.js';
@@ -10,6 +9,7 @@ import { logger } from './logger.js';
 import { createKeyRing } from './keyring.js';
 dotenv.config();
 
+const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_DENIED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const GROQ_RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
 
@@ -29,13 +29,6 @@ function getGroqKeyring() {
 export function resetGroqKeyring() {
     groqKeyring = null;
     groqKeyringRaw = null;
-}
-
-// One SDK client per key, created lazily.
-const groqClients = new Map();
-function getGroqClient(key) {
-    if (!groqClients.has(key)) groqClients.set(key, new Groq({ apiKey: key }));
-    return groqClients.get(key);
 }
 
 function isNetworkError(msg) {
@@ -320,37 +313,59 @@ async function groqTextCompletion(prompt) {
         for (let keyAttempt = 0; keyAttempt < keyCount && currentKey; keyAttempt++) {
             try {
                 logger.info(`Trying text model: ${model} (key attempt ${keyAttempt + 1}/${keyCount})`);
-                return await getGroqClient(currentKey).chat.completions.create({
-                    messages: [{ role: 'user', content: prompt }],
-                    model,
-                    response_format: { type: 'json_object' },
-                    temperature: 0.1,
+                const res = await fetch(GROQ_CHAT_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${currentKey}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model,
+                        messages: [{ role: 'user', content: prompt }],
+                        temperature: 0.1,
+                        max_tokens: 2048,
+                        response_format: { type: 'json_object' },
+                    }),
+                    signal: AbortSignal.timeout(60000),
                 });
+
+                if (!res.ok) {
+                    const errBody = await res.text().catch(() => '');
+                    const msg = `${res.status}: ${errBody.slice(0, 200)}`;
+                    lastError = new Error(msg);
+
+                    // Key-level failure — quarantine and fail over to the next key.
+                    if (res.status === 401 || res.status === 403 || res.status === 429) {
+                        logger.warn(`Groq key rejected (HTTP ${res.status}) — quarantining key and failing over...`);
+                        keyring.markBad(currentKey, res.status === 429 ? undefined : GROQ_DENIED_COOLDOWN_MS);
+                        currentKey = keyring.rotate();
+                        continue;
+                    }
+
+                    // Retired/unknown model — fall through to the next model.
+                    if (res.status === 404 || /does not exist|do not have access|model_not_found|not found/i.test(errBody)) {
+                        logger.warn(`Text model ${model} unavailable (${msg.slice(0, 120)}) — trying next...`);
+                        break;
+                    }
+
+                    // Transient server error — try the next model.
+                    if (res.status === 500 || res.status === 502 || res.status === 503) {
+                        logger.warn(`Text model ${model} transient error (${res.status}) — trying next...`);
+                        break;
+                    }
+
+                    throw new Error(`Groq API error: ${msg}`);
+                }
+
+                return await res.json();
             } catch (err) {
-                lastError = err;
                 const msg = err?.message || '';
-                const status = err?.status;
-
-                // Key-level failure — quarantine and fail over to the next key.
-                if (status === 401 || status === 403 || status === 429) {
-                    logger.warn(`Groq key rejected (HTTP ${status}) — quarantining key and failing over...`);
-                    keyring.markBad(currentKey, status === 429 ? undefined : GROQ_DENIED_COOLDOWN_MS);
-                    currentKey = keyring.rotate();
-                    continue;
-                }
-
-                // Retired/unknown model — fall through to the next model.
-                if (/does not exist|do not have access|model_not_found|not found|404/i.test(msg)) {
-                    logger.warn(`Text model ${model} unavailable (${msg.slice(0, 120)}) — trying next...`);
+                if (/^Groq API error/.test(msg)) throw err;
+                if (isNetworkError(msg)) {
+                    logger.warn(`Text model ${model} network error: ${msg.slice(0, 120)} — trying next...`);
+                    lastError = err;
                     break;
                 }
-
-                // Transient network/server error — try the next model.
-                if (status === 500 || status === 502 || status === 503 || isNetworkError(msg)) {
-                    logger.warn(`Text model ${model} transient error (${msg.slice(0, 120)}) — trying next...`);
-                    break;
-                }
-
                 throw err;
             }
         }
@@ -374,7 +389,7 @@ async function groqVisionRequest(messages, maxTokens = 500) {
         for (let keyAttempt = 0; keyAttempt < keyCount && currentKey; keyAttempt++) {
             try {
                 logger.info(`Trying vision model via direct API: ${model} (key attempt ${keyAttempt + 1}/${keyCount})`);
-                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                const res = await fetch(GROQ_CHAT_URL, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${currentKey}`,

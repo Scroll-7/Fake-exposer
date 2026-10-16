@@ -27,6 +27,23 @@ export function resetGeminiKeyring() {
     geminiKeyringRaw = null;
 }
 
+// Vision-capable model catalogue, ordered by preference. Google retires model
+// names, so this is env-overridable (GEMINI_MODELS) — hardcoding stale names left
+// gemini-2.5-flash as the only working model with no real fallback.
+const DEFAULT_GEMINI_MODELS = [
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-flash-latest',
+    'gemini-flash-lite-latest',
+    'gemini-2.5-pro',
+];
+
+function getGeminiModels() {
+    const raw = process.env.GEMINI_MODELS;
+    if (raw === undefined) return DEFAULT_GEMINI_MODELS;
+    return raw.split(',').map(m => m.trim()).filter(Boolean);
+}
+
 export async function detectAiImage(imageBase64, mimeType) {
     const keyring = getGeminiKeyring();
     if (keyring.current() === null) {
@@ -171,12 +188,7 @@ You MUST respond with ONLY a valid JSON object (no markdown, no explanation outs
   "description": "<1-2 sentence neutral description of what the image shows, e.g. 'A young man taking a selfie in a bedroom mirror' or 'A soccer player in a white jersey on a field'>"
 }`;
 
-        const GEMINI_MODELS = [
-            'gemini-2.5-flash',
-            'gemini-2.0-flash',
-            'gemini-2.0-flash-lite',
-            'gemini-1.5-flash-latest',
-        ];
+        const GEMINI_MODELS = getGeminiModels();
 
         let response = null;
         let usedModel = null;

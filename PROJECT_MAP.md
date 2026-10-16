@@ -179,7 +179,7 @@ POST /api/detect/text { text }
 | Portrait heuristic hard cap (score=15 override) | SOFTENED — changed to ~55% penalty reduction, preserves Groq verdict when adjusted score >30 |
 | AI Detector tab in frontend | REMOVED — HTML tab button, tab-pane, JS logic, CSS styles all deleted |
 | Formality weight mismatch (0.25 numerator vs 0.20 denominator) | FIXED — denominator changed from 0.20 to 0.25 |
-| `groq-sdk` outdated (1.2.1) | UPDATED to 1.3.0 |
+| `groq-sdk` dependency | REMOVED — text and vision both use raw REST `fetch()` calls with key failover |
 | Morgan logging too verbose (`'combined'`) | CHANGED to `'short'` |
 | Python API stdout noise | SUPPRESSED — stdout forwarded nowhere, stderr only logs errors |
 | Auto-trainer startup logs noisy | QUIETED — `stdio: 'ignore'`, only logs on completion |

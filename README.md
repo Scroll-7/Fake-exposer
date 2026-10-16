@@ -146,11 +146,11 @@ vision + text   image forensics (player↔club KB)
 ## Tech stack
 
 **Backend** — Node.js 24 · Express 4 · ES modules
-**LLMs** — Groq (`groq-sdk`, LLaMA 4 Scout/Maverick + Qwen vision) · Google Gemini
+**LLMs** — Groq (OpenAI-compatible REST, `gpt-oss` / `qwen` text models) · Google Gemini
 **ML services** — Python · FastAPI · Uvicorn · scikit-learn · ONNX Runtime · InsightFace (buffalo_l)
 **Frontend** — vanilla HTML/CSS/JS, no framework, no bundler
 **Security** — helmet (CSP) · CORS · express-rate-limit · hpp · multer
-**Testing** — `node:test` (172 tests) · ESLint 10 · Playwright (E2E) · Python `unittest` eval harness (32 tests)
+**Testing** — `node:test` (197 tests) · ESLint 10 · Playwright (E2E) · Python `unittest` eval harness (33 tests)
 **CI** — GitHub Actions
 
 **Dependencies are deliberately minimal** (11 production packages). There is no LangChain, no agent framework, and no vector database: the orchestration is ~2 direct LLM calls, and a framework would add weight while hiding the provider-specific behavior (raw status codes, per-model fallback) this system depends on.
@@ -220,6 +220,7 @@ All configuration is environment-based (see `.env.example`):
 | `GROQ_API_KEY` | ✅ | — | Text + vision analysis via LLaMA 4 |
 | `GROQ_API_KEYS` | ⭕ | — | Comma-separated Groq keys for automatic failover (overrides `GROQ_API_KEY`) |
 | `GEMINI_API_KEYS` | ⭕ | — | AI image forensics. Comma-separated for automatic failover |
+| `GEMINI_MODELS` | ⭕ | built-in list | Comma-separated Gemini vision models to try in order |
 
 Keys use **failover-only rotation**: the app keeps using the active key until it fails, then quarantines it and switches to the next one. A denied key (HTTP `401`/`403`) is quarantined for the rest of the day; a rate-limited key (`429`) is cooled down for 5 minutes and then returns to the pool.
 | `PORT` | ⭕ | `3001` | HTTP port |
