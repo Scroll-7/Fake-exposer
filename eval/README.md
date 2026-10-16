@@ -83,8 +83,11 @@ P(AI)=0.99); with the fix real photos score low (≈0.00–0.05).
 Measured honestly on two benchmarks: on realistic 512px images it is strong
 (ROC-AUC 0.89, ~80% accuracy), but on 32×32 CIFAKE it is near chance
 (ROC-AUC 0.63) — a domain-shift artifact. The pipeline therefore only caps the
-score at high confidence (≥0.9) and treats it as advisory below. Full numbers
-and caveats: `docs/eval-image.md`.
+score at high confidence (≥0.9) and treats it as advisory below. The head can
+be re-trained on a labelled set with `bin/probe-nonescape.py` (a frozen-feature
+linear probe: ROC-AUC 0.89 → 0.97 same-domain, at the cost of the weak
+cross-domain signal); enable it via `NONESCAPE_MODEL`. Full numbers and caveats:
+`docs/eval-image.md`.
 
 
 ### A real sports set (the north star — Phase 3 in the plan)

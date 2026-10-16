@@ -323,5 +323,61 @@ class TestMakeSplit(unittest.TestCase):
         self.assertEqual(len(os.listdir(os.path.join(out, "ai"))), 1)
 
 
+class TestResolveModel(unittest.TestCase):
+    def test_default_when_unset(self):
+        from nonescape_model import DEFAULT_MODEL, resolve_model_path
+
+        self.assertEqual(resolve_model_path({}), DEFAULT_MODEL)
+        self.assertEqual(resolve_model_path({"OTHER": "x"}), DEFAULT_MODEL)
+
+    def test_env_override_wins(self):
+        from nonescape_model import resolve_model_path
+
+        self.assertEqual(resolve_model_path({"NONESCAPE_MODEL": "v1.onnx"}), "v1.onnx")
+
+
+def _load_probe():
+    import importlib.util
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "bin", "probe-nonescape.py")
+    spec = importlib.util.spec_from_file_location("probe_nonescape", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestProbeNonescape(unittest.TestCase):
+    def test_softmax_ai_is_sigmoid_of_logit_gap(self):
+        probe = _load_probe()
+        p = probe.softmax_ai(np.array([[0.0, 0.0], [2.0, 0.0]], dtype=np.float32))
+        self.assertAlmostEqual(float(p[0]), 0.5, places=5)
+        self.assertAlmostEqual(float(p[1]), 1.0 / (1.0 + np.exp(2.0)), places=5)
+
+    def test_ece_flags_miscalibration(self):
+        probe = _load_probe()
+        good = probe.ece_score([1] * 90 + [0] * 10, [0.9] * 100)
+        bad = probe.ece_score([1] * 50 + [0] * 50, [0.9] * 100)
+        self.assertLess(good, 0.05)
+        self.assertGreater(bad, good)
+
+    def test_read_labels_and_sampling(self):
+        probe = _load_probe()
+        d = tempfile.mkdtemp()
+        names = ["r1.jpg", "r2.jpg", "a1.jpg", "a2.jpg", "a3.jpg"]
+        for n in names:
+            open(os.path.join(d, n), "wb").close()
+        csv_path = os.path.join(d, "train.csv")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write("file_name,label\nr1.jpg,0\nr2.jpg,0\na1.jpg,1\na2.jpg,1\na3.jpg,1\n")
+        rows = probe.read_labels(csv_path, d)
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(sum(y for _, y in rows), 3)  # three AI (label 1)
+        train, val = probe.sample_balanced(rows, per_class=1, val_per_class=1, exclude_dirs=[])
+        self.assertEqual(len(train), 2)  # 1 real + 1 ai
+        self.assertEqual(len(val), 2)
+        self.assertEqual(sum(y for _, y in train), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

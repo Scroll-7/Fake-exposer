@@ -66,7 +66,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Local AI-image detector evaluation.")
     parser.add_argument("--real", required=True, help="Folder of real photos.")
     parser.add_argument("--ai", required=True, help="Folder of AI-generated images.")
-    parser.add_argument("--model", default="nonescape-mini-v0.onnx")
+    from nonescape_model import resolve_model_path
+
+    parser.add_argument("--model", default=resolve_model_path())
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--limit", type=int, default=0, help="Cap per class (0 = all).")
     args = parser.parse_args(argv)

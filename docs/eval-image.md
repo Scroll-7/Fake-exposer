@@ -74,6 +74,46 @@ hard. So 0.9 is where the pipeline draws the line.
    which the pipeline now implements (see `nonescapeAdvisory()` in
    `services/groq.js`).
 
+## Can we just retrain it? (linear probe result)
+
+Full backbone fine-tuning is infeasible on CPU, but the backbone can be frozen
+and the final `Linear(1024, 2)` head re-fit on cached features — a *linear
+probe* (`bin/probe-nonescape.py`). We extracted features for 2500/class train +
+500/class val from the realistic dataset (val AUC 0.974) and then scored v1 on
+the **independent** realistic eval set, CIFAKE, and 32 real known-face photos:
+
+| model | realistic ROC-AUC | realistic acc | realistic ECE | CIFAKE ROC-AUC | real faces >0.5 |
+|---|---|---|---|---|---|
+| v0 (upstream) | 0.890 | 0.804 | 0.088 | **0.631** | 1/32 |
+| **v1 (linear probe)** | **0.971** | **0.917** | **0.018** | 0.498 | 1/32 |
+| ensemble mean(v0,v1) | 0.959 | 0.887 | — | 0.551 | 1/32 |
+
+Read it honestly:
+
+- **v1 nearly doubles the same-domain signal and is far better calibrated**
+  (ECE 0.088 → 0.018), and real-photo false positives are unchanged.
+- **v1 loses the cross-domain signal** on CIFAKE (0.631 → 0.498). Both scores
+  are in "unusable" territory, but v0 really was carrying *some* out-of-distribution
+  cue that the probe no longer uses — a reminder that the probe is fit to one
+  image generator.
+- **No ensemble dominates**: the mean blend is worse than v1 same-domain and
+  worse than v0 cross-domain, so there is no free lunch here.
+
+**Decision.** v0 stays the default — it is the only checkpoint a fresh clone
+has, and it is the more general of the two. The probe is available as an opt-in
+for realistic-image workloads:
+
+```bash
+python bin/probe-nonescape.py features --csv "archive (1)/train.csv" --root "archive (1)" \
+    --per-class 2500 --val-per-class 500 --exclude-dir eval/data/aihuman \
+    --cache eval/data/.probe.npz
+python bin/probe-nonescape.py train  --cache eval/data/.probe.npz --head-out eval/data/.probe-head.npz
+python bin/probe-nonescape.py export --head eval/data/.probe-head.npz \
+    --safetensors nonescape-mini-v0.safetensors --onnx nonescape-mini-v1.onnx
+# then point the runtime and eval at it:
+set NONESCAPE_MODEL=nonescape-mini-v1.onnx        # PowerShell:  $env:NONESCAPE_MODEL="..."
+```
+
 ## Caveats
 
 - CIFAKE is 32×32 upscaled — a proxy, not the deployment distribution; read it

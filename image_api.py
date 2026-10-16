@@ -27,16 +27,19 @@ from pydantic import BaseModel
 import onnxruntime as ort
 import numpy as np
 from nonescape_preprocess import preprocess_nonescape
+from nonescape_model import resolve_model_path
 
 app = FastAPI(title="AI Image Detection API")
 
-# ── AI Detection Model (Nonescape mini v0) ──
+# ── AI Detection Model (Nonescape mini) ──
+# Path is overridable via the NONESCAPE_MODEL env var (NONESCAPE_MODEL=nonescape-mini-v1.onnx)
+_model_path = resolve_model_path()
 ai_session = None
 try:
-    ai_session = ort.InferenceSession("nonescape-mini-v0.onnx")
-    print("AI Detection ONNX model loaded successfully!")
+    ai_session = ort.InferenceSession(_model_path)
+    print(f"AI Detection ONNX model loaded successfully! ({_model_path})")
 except Exception as e:
-    print(f"Error loading AI detection model: {e}")
+    print(f"Error loading AI detection model ({_model_path}): {e}")
     print("Run: npm run download-models")
     print("Or download manually from: https://github.com/e3ntity/nonescape")
 
@@ -59,7 +62,7 @@ def health():
 @app.post("/detect_ai", response_model=AiDetectResponse)
 async def detect_ai(file: UploadFile = File(...)):
     if not ai_session:
-        return {"error": "AI detection model not loaded. Ensure nonescape-mini-v0.onnx is in the directory."}
+        return {"error": f"AI detection model not loaded. Ensure {_model_path} is in the directory."}
     image_bytes = await file.read()
     input_data = preprocess_ai_detection(image_bytes)
     input_name = ai_session.get_inputs()[0].name
