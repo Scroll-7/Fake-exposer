@@ -3,25 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fake Exposer - AI & Fact Checking 🕵️</title>
-    <meta name="description" content="Instantly analyze news articles, URLs, and screenshots for credibility, bias, and fake news indicators using advanced AI.">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+    <title>Fake Exposer — news credibility check</title>
+    <meta name="description" content="Paste a news claim, URL, or screenshot and get a credibility, bias, and red-flag read.">
     <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
     <div id="toast-container" class="toast-container"></div>
-    <div class="background-effects">
-        <div class="glow glow-1"></div>
-        <div class="glow glow-2"></div>
-    </div>
 
     <main class="container">
         <header class="hero">
-            <h1 class="title">
-                <span class="emoji-logo">🕵️</span>
-                Fake <span class="gradient-text">Exposer</span>
-            </h1>
-            <p class="subtitle">Is it real or fake? Paste some text, a link, or a picture to find out instantly!</p>
+            <h1 class="title">Fake Exposer</h1>
+            <p class="subtitle">Paste a news claim, a link, or a screenshot and see how well it holds up.</p>
         </header>
 
         <div class="app-layout" id="app-layout">
@@ -48,7 +40,7 @@
                             </svg>
                         </div>
                         <div class="meter-text">
-                            <h2 id="meter-title">Authenticity Check</h2>
+                            <h2 id="meter-title">Authenticity check</h2>
                             <h3 id="verdict-text" class="verdict">Analyzing...</h3>
                             <p id="summary-text" class="summary"></p>
                         </div>
@@ -58,7 +50,7 @@
                     <div class="details-card">
                         <div class="info-row">
                             <div class="info-box">
-                                <span class="label">Bias Detected</span>
+                                <span class="label">Bias detected</span>
                                 <span class="value" id="bias-val">--</span>
                             </div>
                             <div class="info-box">
@@ -69,17 +61,17 @@
 
                         <div class="flags-container">
                             <div class="flag-box red">
-                                <h3>🚩 Red Flags</h3>
+                                <h3>Red flags</h3>
                                 <ul id="red-flags-list"></ul>
                             </div>
                             <div class="flag-box green">
-                                <h3>✅ Green Flags</h3>
+                                <h3>Green flags</h3>
                                 <ul id="green-flags-list"></ul>
                             </div>
                         </div>
 
                         <div class="recommendations">
-                            <h3>💡 Recommendations</h3>
+                            <h3>Recommendations</h3>
                             <ul id="recommendations-list"></ul>
                         </div>
                     </div>
@@ -106,17 +98,17 @@
             <!-- Input Section -->
             <section class="input-section glass-panel">
                 <div class="tabs">
-                <button class="tab-btn active" data-tab="text">📝 Text</button>
-                <button class="tab-btn" data-tab="url">🔗 URL</button>
-                <button class="tab-btn" data-tab="image">📸 Screenshot</button>
-            </div>
+                    <button class="tab-btn active" data-tab="text">Text</button>
+                    <button class="tab-btn" data-tab="url">URL</button>
+                    <button class="tab-btn" data-tab="image">Screenshot</button>
+                </div>
 
                 <div class="tab-content">
                     <!-- Text Input -->
                     <div class="tab-pane active" id="tab-text">
                         <textarea id="text-input" placeholder="Paste the news article or claim here..."></textarea>
                         <button class="primary-btn analyze-btn" id="analyze-text-btn">
-                            <span class="btn-text">Analyze Text</span>
+                            <span class="btn-text">Analyze text</span>
                             <span class="spinner hidden"></span>
                         </button>
                     </div>
@@ -133,21 +125,19 @@
                     <!-- Image Input -->
                     <div class="tab-pane" id="tab-image">
                         <div class="upload-area" id="drop-zone">
-                            <div class="upload-icon">📸</div>
-                            <p>Drag & drop a screenshot or <span class="highlight">browse</span></p>
+                            <p>Drag &amp; drop a screenshot, or <span class="highlight">browse</span></p>
                             <input type="file" id="file-input" accept="image/*" hidden>
                         </div>
                         <div class="context-field">
                             <label class="context-label" for="image-context">
-                                <span class="context-label-icon">💬</span>
-                                <span>Add Context <span class="context-optional">(Optional)</span></span>
+                                Add context <span class="context-optional">(optional)</span>
                             </label>
                             <textarea id="image-context" class="context-input" rows="1" placeholder="Describe what this image claims"></textarea>
-                            <p class="context-hint">Providing context helps the AI make a more accurate verdict.</p>
+                            <p class="context-hint">Context helps the analysis give a more accurate verdict.</p>
                         </div>
-                        <button class="secondary-btn hidden" id="change-image-btn">🔄 Change Image</button>
+                        <button class="secondary-btn hidden" id="change-image-btn">Change image</button>
                         <button class="primary-btn analyze-btn hidden" id="analyze-image-btn">
-                            <span class="btn-text">Analyze Image</span>
+                            <span class="btn-text">Analyze image</span>
                             <span class="spinner hidden"></span>
                         </button>
                     </div>

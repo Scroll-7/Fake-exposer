@@ -315,11 +315,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Everything in between → yellow
         let color, colorRaw;
         if (isFake && displayPct >= 70) {
-            color = 'var(--red)';   colorRaw = '#ef4444';
+            color = 'var(--red)';   colorRaw = '#b3261e';
         } else if (!isFake && displayPct >= 70) {
-            color = 'var(--green)'; colorRaw = '#10b981';
+            color = 'var(--green)'; colorRaw = '#1e6b41';
         } else {
-            color = 'var(--amber)'; colorRaw = '#f59e0b';
+            color = 'var(--amber)'; colorRaw = '#96650a';
         }
 
         // ── Meter ring: fill based on displayPct ──
@@ -361,19 +361,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const badge = document.createElement('div');
             badge.id = 'trusted-boost-badge';
             badge.className = 'trusted-boost-badge';
-            badge.innerHTML = '⭐ Trusted Source Boost Applied <span>+50%</span>';
+            badge.innerHTML = 'Trusted source boost applied <span>+50</span>';
             document.querySelector('.meter-card').appendChild(badge);
         }
 
         // ── Face identified badge ──
         const faceBadge = document.getElementById('face-badge');
         if (data.face_identified) {
-            faceBadge.textContent = '';
-            const icon = document.createElement('span');
-            icon.className = 'badge-icon';
-            icon.textContent = '👤';
-            faceBadge.appendChild(icon);
-            faceBadge.append(' ' + data.face_identified);
+            faceBadge.textContent = 'Face match: ' + data.face_identified;
             faceBadge.classList.remove('hidden');
         } else {
             faceBadge.classList.add('hidden');
