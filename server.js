@@ -16,7 +16,7 @@ import { analyzeText as detectText } from './services/textDetector.js';
 import { scrapeUrl } from './services/scraper.js';
 import { AI_FILENAME_KEYWORDS } from './services/heuristics.js';
 import { logger } from './services/logger.js';
-import { createApiAuth } from './services/auth.js';
+import { createApiAuth, parseOrigins, productionAuthError } from './services/auth.js';
 import fs from 'fs';
 
 // In test mode, do NOT load .env so the test-controlled env vars are used
@@ -39,6 +39,19 @@ if (!process.env.GROQ_API_KEY) {
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Behind a reverse proxy / load balancer, express-rate-limit must trust the
+// proxy or every client shares the proxy's IP and one user's traffic throttles
+// everyone. Off by default; enable with TRUST_PROXY (e.g. `1` for one hop, or
+// `loopback`). See https://expressjs.com/en/guide/behind-proxies.html
+export function parseTrustProxy(raw) {
+    if (raw === undefined || raw === '') return false;
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    const n = Number(raw);
+    return Number.isNaN(n) ? raw : n;
+}
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 
 // Middlewares
 app.use(compression()); // gzip all responses — smaller payloads, faster loads
@@ -75,7 +88,19 @@ app.use(helmet({
         },
     },
 }));
-app.use(cors({ origin: false })); // Same-origin only — frontend is served by Express
+app.use(cors({
+    // Same-origin only unless CORS_ORIGINS lists allowed cross-origin callers.
+    origin: (() => {
+        const allowed = new Set(parseOrigins(process.env.CORS_ORIGINS));
+        if (allowed.size === 0) return false;
+        return (origin, cb) => {
+            if (!origin) return cb(null, true);
+            let normalized = origin;
+            try { normalized = new URL(origin).origin; } catch { /* keep raw */ }
+            cb(null, allowed.has(normalized));
+        };
+    })(),
+}));
 
 // HTTPS redirect — skip for localhost dev and already-secure requests
 app.use((req, res, next) => {
@@ -109,7 +134,10 @@ app.use('/api/analyze/', apiLimiter);
 // matching bearer token is required too (protects the paid LLM quota). Without
 // the token the API stays open for local use, but we warn loudly.
 const apiAuth = createApiAuth();
-if (!process.env.API_AUTH_TOKEN) {
+const authConfigError = productionAuthError();
+if (authConfigError) {
+    logger.error(authConfigError);
+} else if (!process.env.API_AUTH_TOKEN) {
     logger.warn('API_AUTH_TOKEN is not set — /api endpoints are unauthenticated. Set it to protect paid API usage.');
 }
 app.use('/api', apiAuth);
@@ -413,6 +441,10 @@ app.use((err, req, res, next) => {
 });
 
 function startServer(port) {
+    if (authConfigError) {
+        logger.error('Refusing to start: set API_AUTH_TOKEN before running in production.');
+        process.exit(1);
+    }
     const server = app.listen(port, () => {
         const actualPort = server.address().port;
         logger.info(`Server running on http://localhost:${actualPort}`);

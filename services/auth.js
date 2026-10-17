@@ -25,21 +25,47 @@ export function extractToken(req) {
     return null;
 }
 
+// Normalise an origin string to its `scheme://host` form; return it unchanged
+// if it does not parse (so a typo matches nothing instead of matching all).
+function normalizeOrigin(value) {
+    try {
+        return new URL(value).origin;
+    } catch {
+        return String(value);
+    }
+}
+
+// Normalise a comma-separated CORS allowlist into a list of `scheme://host`
+// origins.
+export function parseOrigins(raw) {
+    return String(raw || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map(normalizeOrigin);
+}
+
 // Allow requests with no Origin header (non-browser clients, curl, same-origin
-// navigations). Reject any explicit Origin that does not match the request host.
-export function isSameOrigin(req) {
+// navigations) and requests whose Origin matches the request host. An explicit
+// cross-origin request is allowed only when its origin is on the allowlist.
+export function isSameOrigin(req, allowedOrigins = []) {
     const origin = req.headers?.origin;
     if (!origin || origin === 'null') return true;
     try {
-        return new URL(origin).host === req.headers.host;
+        const parsed = new URL(origin);
+        if (parsed.host === req.headers?.host) return true;
+        return allowedOrigins.some((o) => normalizeOrigin(o) === parsed.origin);
     } catch {
         return false;
     }
 }
 
-export function createApiAuth(getToken = () => process.env.API_AUTH_TOKEN) {
+export function createApiAuth(
+    getToken = () => process.env.API_AUTH_TOKEN,
+    getAllowedOrigins = () => parseOrigins(process.env.CORS_ORIGINS),
+) {
     return function requireApiAuth(req, res, next) {
-        if (!isSameOrigin(req)) {
+        if (!isSameOrigin(req, getAllowedOrigins())) {
             return res.status(403).json({ error: 'Cross-origin requests are not allowed.' });
         }
         const expected = getToken();
@@ -49,4 +75,14 @@ export function createApiAuth(getToken = () => process.env.API_AUTH_TOKEN) {
         res.set('WWW-Authenticate', 'Bearer');
         return res.status(401).json({ error: 'Unauthorized. Provide a valid API token.' });
     };
+}
+
+// Fail-fast guard for production: an unauthenticated public API can be drained
+// by anyone who can reach it. Returns an error message, or null when the
+// configuration is safe.
+export function productionAuthError(env = process.env) {
+    if (env.NODE_ENV === 'production' && !env.API_AUTH_TOKEN) {
+        return 'API_AUTH_TOKEN must be set when NODE_ENV=production — refusing to run an unauthenticated API.';
+    }
+    return null;
 }

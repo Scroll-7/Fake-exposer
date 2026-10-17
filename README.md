@@ -221,14 +221,19 @@ All configuration is environment-based (see `.env.example`):
 | `GROQ_API_KEYS` | ⭕ | — | Comma-separated Groq keys for automatic failover (overrides `GROQ_API_KEY`) |
 | `GEMINI_API_KEYS` | ⭕ | — | AI image forensics. Comma-separated for automatic failover |
 | `GEMINI_MODELS` | ⭕ | built-in list | Comma-separated Gemini vision models to try in order |
-| `API_AUTH_TOKEN` | ⭕ | — | Bearer token guarding `/api/*`. Unset = open (local dev only); the server logs a warning |
+| `API_AUTH_TOKEN` | ⭕ | — | Bearer token guarding `/api/*`. Unset = open (local dev only); the server logs a warning. **Required** when `NODE_ENV=production` |
+| `NODE_ENV` | ⭕ | — | Set to `production` to enforce the auth requirement and disable dev-only behaviour |
+| `CORS_ORIGINS` | ⭕ | — | Comma-separated exact origins allowed to call `/api` from a browser. Unset = same-origin only |
+| `TRUST_PROXY` | ⭕ | `false` | Express `trust proxy`: number of hops (`1`), `loopback`, or IP/subnet list — needed behind a reverse proxy so rate limits key on the real client IP |
 | `PORT` | ⭕ | `3001` | HTTP port |
 
 Keys use **failover-only rotation**: the app keeps using the active key until it fails, then quarantines it and switches to the next one. A denied key (HTTP `401`/`403`) is quarantined for the rest of the day; a rate-limited key (`429`) is cooled down for 5 minutes and then returns to the pool.
 
 Without `GROQ_API_KEY` the server still boots and serves the UI, but analysis endpoints return a descriptive error instead of crashing.
 
-When `API_AUTH_TOKEN` is set, every `/api/*` request must send it as `Authorization: Bearer <token>` or `X-API-Key: <token>`. Same-origin browser requests from the bundled UI are always allowed; cross-origin requests are always rejected.
+When `API_AUTH_TOKEN` is set, every `/api/*` request must send it as `Authorization: Bearer <token>` or `X-API-Key: <token>`. Same-origin browser requests from the bundled UI are always allowed; cross-origin requests are rejected unless the origin is listed in `CORS_ORIGINS`.
+
+> **Deploying publicly?** Set `NODE_ENV=production` **and** `API_AUTH_TOKEN` — the server refuses to boot in production without a token, so an open API can't be exposed by accident. Put it behind a reverse proxy with `TRUST_PROXY=1` so rate limits see the real client IP.
 
 ---
 
@@ -348,7 +353,7 @@ Returns Face API availability and the list of recognizable identities. Never fai
 | **SSRF** | `validatePublicUrl()` blocks non-HTTP schemes and any host resolving to private, loopback, link-local, or CGNAT addresses. **Fails closed**, re-validated on every redirect hop (`redirect: 'manual'`), so a hostile server can't bounce the fetcher onto `127.0.0.1` or cloud metadata endpoints. |
 | **Malicious uploads** | Multer MIME filter **plus** server-side magic-byte sniffing — the client-declared content type is never trusted. 5 MB cap, temp file deleted in a `finally` block. |
 | **XSS** | `sanitize()` strips HTML tags and control characters from all text/URL input. The frontend uses `textContent`/`createElement`, never raw `innerHTML`, for dynamic content. |
-| **Authentication** | Optional bearer token (`API_AUTH_TOKEN`) on all `/api/*` routes, compared in constant time; same-origin enforced, cross-origin rejected with `403`. Unset = open local-dev mode with a startup warning. |
+| **Authentication** | Optional bearer token (`API_AUTH_TOKEN`) on all `/api/*` routes, compared in constant time; same-origin enforced, cross-origin rejected with `403` unless allowlisted via `CORS_ORIGINS`. In production (`NODE_ENV=production`) a token is mandatory or the server refuses to start. |
 | **CSP & headers** | Helmet with a strict policy, `X-Powered-By` hidden, `Permissions-Policy` and `Cross-Origin-Resource-Policy` set. |
 | **Rate limiting** | Tiered: 15/hr image (protects API spend), 60/hr analysis, 120/hr local text detector. |
 | **API key leakage** | `.env` is gitignored; keys are read only from `process.env` and never returned to clients. Errors are logged server-side, clients get generic messages. |
@@ -359,7 +364,7 @@ Returns Face API availability and the list of recognizable identities. Never fai
 ## Testing
 
 ```bash
-npm test          # 215 tests (full suite: heuristics, sportsKB, groq, server, scraper, auth, text, logger, retry, aiDetector)
+npm test          # 220 tests (full suite: heuristics, sportsKB, groq, server, scraper, auth, text, logger, retry, aiDetector)
 npm run lint      # ESLint
 npm run test:unit # core unit suites only (heuristics, sportsKB, groq)
 npm run test:e2e  # Playwright (requires a running server)

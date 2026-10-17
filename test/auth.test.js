@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createApiAuth, extractToken, isSameOrigin, timingSafeEqual } from '../services/auth.js';
+import {
+    createApiAuth,
+    extractToken,
+    isSameOrigin,
+    parseOrigins,
+    productionAuthError,
+    timingSafeEqual,
+} from '../services/auth.js';
 
 function mockRes() {
     return {
@@ -33,6 +40,22 @@ describe('auth', () => {
         assert.equal(isSameOrigin({ headers: { host: 'localhost:3001', origin: 'http://localhost:3001' } }), true);
         assert.equal(isSameOrigin({ headers: { host: 'localhost:3001', origin: 'http://evil.example' } }), false);
         assert.equal(isSameOrigin({ headers: { host: 'localhost:3001', origin: 'not a url' } }), false);
+    });
+
+    it('parseOrigins normalises a comma-separated allowlist', () => {
+        assert.deepEqual(parseOrigins('https://a.example, https://b.example/'), [
+            'https://a.example',
+            'https://b.example',
+        ]);
+        assert.deepEqual(parseOrigins(''), []);
+        assert.deepEqual(parseOrigins(undefined), []);
+    });
+
+    it('isSameOrigin consults the allowlist for cross-origin requests', () => {
+        const req = { headers: { host: 'localhost:3001', origin: 'https://app.example' } };
+        assert.equal(isSameOrigin(req), false);
+        assert.equal(isSameOrigin(req, ['https://app.example']), true);
+        assert.equal(isSameOrigin(req, ['https://other.example']), false);
     });
 
     it('passes through when no token is configured', () => {
@@ -69,5 +92,29 @@ describe('auth', () => {
             throw new Error('should not pass');
         });
         assert.equal(res.statusCode, 403);
+    });
+
+    it('allows an allowlisted cross-origin caller through', () => {
+        const mw = createApiAuth(() => 'secret', () => ['https://app.example']);
+        let called = false;
+        mw(
+            {
+                headers: {
+                    host: 'localhost:3001',
+                    origin: 'https://app.example',
+                    authorization: 'Bearer secret',
+                },
+            },
+            mockRes(),
+            () => { called = true; },
+        );
+        assert.equal(called, true);
+    });
+
+    it('productionAuthError only fires in production without a token', () => {
+        assert.match(productionAuthError({ NODE_ENV: 'production' }), /API_AUTH_TOKEN/);
+        assert.equal(productionAuthError({ NODE_ENV: 'production', API_AUTH_TOKEN: 'x' }), null);
+        assert.equal(productionAuthError({ NODE_ENV: 'development' }), null);
+        assert.equal(productionAuthError({}), null);
     });
 });

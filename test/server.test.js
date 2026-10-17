@@ -320,3 +320,17 @@ describe('Server API Endpoints', () => {
         });
     });
 });
+
+describe('server config helpers', () => {
+    it('parseTrustProxy parses booleans, hop counts and host lists', async () => {
+        const { parseTrustProxy } = await import('../server.js');
+        assert.equal(parseTrustProxy(undefined), false);
+        assert.equal(parseTrustProxy(''), false);
+        assert.equal(parseTrustProxy('false'), false);
+        assert.equal(parseTrustProxy('true'), true);
+        assert.equal(parseTrustProxy('1'), 1);
+        assert.equal(parseTrustProxy('2'), 2);
+        assert.equal(parseTrustProxy('loopback'), 'loopback');
+        assert.equal(parseTrustProxy('10.0.0.0/8'), '10.0.0.0/8');
+    });
+});
