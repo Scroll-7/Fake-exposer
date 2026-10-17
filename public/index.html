@@ -14,12 +14,17 @@
         <header class="hero">
             <h1 class="title">Fake Exposer</h1>
             <p class="subtitle">Paste a news claim, a link, or a screenshot and see how well it holds up.</p>
+            <div class="auth-bar">
+                <label for="api-token" class="auth-label">API token</label>
+                <input type="password" id="api-token" class="auth-input" autocomplete="off" spellcheck="false"
+                       placeholder="Only needed if the server sets API_AUTH_TOKEN">
+            </div>
         </header>
 
         <div class="app-layout" id="app-layout">
             <!-- Results Section (Hidden initially) -->
             <section class="results-section hidden" id="results">
-                <div class="glass-panel results-grid">
+                <div class="panel results-grid">
                     <div class="meter-card">
                         <div class="meter-container">
                             <svg class="circular-chart" viewBox="0 0 36 36">
@@ -80,7 +85,7 @@
 
             <!-- Progress Bar (hidden initially) -->
             <section class="progress-section hidden" id="progress-section">
-                <div class="glass-panel progress-panel">
+                <div class="panel progress-panel">
                     <h3 class="progress-title" id="progress-title">Analyzing...</h3>
                     <div class="progress-bar-track">
                         <div class="progress-bar-fill" id="progress-fill"></div>
@@ -96,7 +101,7 @@
             </section>
 
             <!-- Input Section -->
-            <section class="input-section glass-panel">
+            <section class="input-section panel">
                 <div class="tabs">
                     <button class="tab-btn active" data-tab="text">Text</button>
                     <button class="tab-btn" data-tab="url">URL</button>

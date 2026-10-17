@@ -240,4 +240,83 @@ describe('Server API Endpoints', () => {
         });
 
     });
+
+    it('/api/analyze/text rejects whitespace and tag-only input', async () => {
+        skipIfOffline();
+        for (const body of ['   ', '<div></div>', '<>']) {
+            const res = await fetch(`${BASE}/api/analyze/text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: body })
+            });
+            assert.equal(res.status, 400);
+            assert.equal((await res.json()).error, 'Text is required');
+        }
+    });
+
+    it('/api/analyze/text enforces the length limit', async () => {
+        skipIfOffline();
+        const res = await fetch(`${BASE}/api/analyze/text`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: 'a '.repeat(8000) })
+        });
+        assert.equal(res.status, 400);
+        assert.match((await res.json()).error, /character limit/);
+    });
+
+    it('/api/analyze/image rejects a corrupted PNG (bad magic bytes)', async () => {
+        skipIfOffline();
+        const form = new FormData();
+        form.append('image', new Blob([Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])], { type: 'image/png' }), 'broken.png');
+        const res = await fetch(`${BASE}/api/analyze/image`, { method: 'POST', body: form });
+        assert.equal(res.status, 400);
+        assert.match((await res.json()).error, /invalid or corrupted/i);
+    });
+
+    it('/api/analyze/image rejects files over 5MB', async () => {
+        skipIfOffline();
+        const form = new FormData();
+        const big = new Uint8Array(6 * 1024 * 1024);
+        big[0] = 0x89; big[1] = 0x50; big[2] = 0x4e; big[3] = 0x47;
+        form.append('image', new Blob([big], { type: 'image/png' }), 'big.png');
+        const res = await fetch(`${BASE}/api/analyze/image`, { method: 'POST', body: form });
+        assert.equal(res.status, 400);
+        assert.match((await res.json()).error, /too large/i);
+    });
+
+    it('rejects cross-origin API requests with 403', async () => {
+        skipIfOffline();
+        const res = await fetch(`${BASE}/api/detect/text`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Origin: 'http://evil.example' },
+            body: JSON.stringify({ text: 'I went to the store yesterday.' })
+        });
+        assert.equal(res.status, 403);
+    });
+
+    describe('API token auth (API_AUTH_TOKEN set)', () => {
+        before(() => { process.env.API_AUTH_TOKEN = 'test-secret'; });
+        after(() => { delete process.env.API_AUTH_TOKEN; });
+
+        it('rejects requests without a token', async () => {
+            skipIfOffline();
+            const res = await fetch(`${BASE}/api/detect/text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: 'I went to the store yesterday and bought milk.' })
+            });
+            assert.equal(res.status, 401);
+        });
+
+        it('accepts requests with the correct bearer token', async () => {
+            skipIfOffline();
+            const res = await fetch(`${BASE}/api/detect/text`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-secret' },
+                body: JSON.stringify({ text: 'I went to the store yesterday and bought some milk.' })
+            });
+            assert.equal(res.status, 200);
+        });
+    });
 });

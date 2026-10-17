@@ -52,6 +52,41 @@ body {
     max-width: 40rem;
 }
 
+/* ── API token bar ── */
+
+.auth-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+}
+
+.auth-label {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.auth-input {
+    flex: 1;
+    min-width: 16rem;
+    max-width: 28rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 0.9rem;
+}
+
+.auth-input:focus {
+    outline: none;
+    border-color: var(--ink);
+}
+
 /* ── Layout ── */
 
 .app-layout {
@@ -78,7 +113,7 @@ body {
     }
 }
 
-.glass-panel {
+.panel {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 5px;

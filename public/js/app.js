@@ -37,6 +37,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 4400); 
     }
 
+    // ── API token ──
+    // Stored in localStorage and sent as a bearer token. Only required when the
+    // server is started with API_AUTH_TOKEN set.
+    const TOKEN_KEY = 'fn_api_token';
+    const tokenInput = document.getElementById('api-token');
+    if (tokenInput) {
+        tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
+        tokenInput.addEventListener('change', () => {
+            const val = tokenInput.value.trim();
+            if (val) localStorage.setItem(TOKEN_KEY, val);
+            else localStorage.removeItem(TOKEN_KEY);
+            showToast(val ? 'API token saved.' : 'API token cleared.');
+        });
+    }
+
+    function authHeaders() {
+        const token = localStorage.getItem(TOKEN_KEY);
+        return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+
     // File Upload handling
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
@@ -237,6 +257,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch('/api/analyze/image', {
                 method: 'POST',
+                headers: authHeaders(),
                 body: formData,
                 signal: controller.signal
             });
@@ -263,7 +284,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch(endpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
                 body: JSON.stringify(payload)
             });
             const data = await res.json();

@@ -128,7 +128,7 @@ test.describe('Fake Exposer E2E', () => {
     });
 
     test('all glass panels render', async ({ page }) => {
-        const panels = page.locator('.glass-panel');
+        const panels = page.locator('.panel');
         const count = await panels.count();
         expect(count).toBeGreaterThanOrEqual(1);
     });

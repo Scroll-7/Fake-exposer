@@ -16,6 +16,7 @@ import { analyzeText as detectText } from './services/textDetector.js';
 import { scrapeUrl } from './services/scraper.js';
 import { AI_FILENAME_KEYWORDS } from './services/heuristics.js';
 import { logger } from './services/logger.js';
+import { createApiAuth } from './services/auth.js';
 import fs from 'fs';
 
 // In test mode, do NOT load .env so the test-controlled env vars are used
@@ -102,6 +103,16 @@ const apiLimiter = rateLimit({
 
 // Apply rate limiting specifically to the analysis endpoints
 app.use('/api/analyze/', apiLimiter);
+
+// --- API Access Control ---
+// Every /api request is checked for same-origin. When API_AUTH_TOKEN is set, a
+// matching bearer token is required too (protects the paid LLM quota). Without
+// the token the API stays open for local use, but we warn loudly.
+const apiAuth = createApiAuth();
+if (!process.env.API_AUTH_TOKEN) {
+    logger.warn('API_AUTH_TOKEN is not set — /api endpoints are unauthenticated. Set it to protect paid API usage.');
+}
+app.use('/api', apiAuth);
 
 // Stricter rate limiter for image analysis (costs real API $$)
 // 15 uploads/hr per IP is plenty for interactive use

@@ -25,6 +25,7 @@ export default [
                 FileReader: 'readonly',
                 FormData: 'readonly',
                 Blob: 'readonly',
+                localStorage: 'readonly',
                 URL: 'readonly',
                 HTMLElement: 'readonly',
                 HTMLDivElement: 'readonly',

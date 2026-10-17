@@ -47,13 +47,17 @@ describe('searchWeb', () => {
 });
 
 describe('scrapeUrl', () => {
+    const resolvePublic = async () => ['93.184.216.34'];
+    const resolvePrivate = async () => ['127.0.0.1'];
+    const rejectRequest = async () => { throw new Error('no direct fetch in tests'); };
+
     it('throws on failed Jina response', async () => {
         mock.method(global, 'fetch', () => Promise.resolve({
             ok: false,
             statusText: 'Bad Gateway',
         }));
         await assert.rejects(
-            () => scrapeUrl('https://example.com/article'),
+            () => scrapeUrl('https://example.com/article', { resolveHost: resolvePublic, request: rejectRequest }),
             /Could not extract text/
         );
         mock.reset();
@@ -65,7 +69,7 @@ describe('scrapeUrl', () => {
             text: () => Promise.resolve('   '),
         }));
         await assert.rejects(
-            () => scrapeUrl('https://example.com/article'),
+            () => scrapeUrl('https://example.com/article', { resolveHost: resolvePublic, request: rejectRequest }),
             /Could not extract text/
         );
         mock.reset();
@@ -76,9 +80,30 @@ describe('scrapeUrl', () => {
             ok: true,
             text: () => Promise.resolve('# Article Title\n\nSome content here.'),
         }));
-        const result = await scrapeUrl('https://example.com/article');
+        const result = await scrapeUrl('https://example.com/article', { resolveHost: resolvePublic });
         assert.equal(result, '# Article Title\n\nSome content here.');
         mock.reset();
+    });
+
+    it('blocks private targets before they reach the Jina reader', async () => {
+        let jinaCalled = false;
+        mock.method(global, 'fetch', () => {
+            jinaCalled = true;
+            return Promise.resolve({ ok: true, text: () => Promise.resolve('secret') });
+        });
+        await assert.rejects(
+            () => scrapeUrl('http://localhost:8000/admin', { resolveHost: resolvePrivate }),
+            /private, unresolvable, or invalid/
+        );
+        assert.equal(jinaCalled, false);
+        mock.reset();
+    });
+
+    it('rejects an IP-literal loopback target', async () => {
+        await assert.rejects(
+            () => scrapeUrl('http://[::1]:8000/router', { resolveHost: resolvePrivate }),
+            /private, unresolvable, or invalid/
+        );
     });
 });
 
@@ -157,6 +182,29 @@ describe('SSRF guard (validatePublicUrl / isPrivateIp)', () => {
     it('fails closed for unrecognised input', () => {
         assert.equal(isPrivateIp('not-an-ip'), true);
         assert.equal(isPrivateIp(''), true);
+    });
+
+    it('classifies reserved, multicast and documentation IPv4 ranges', () => {
+        assert.equal(isPrivateIp('0.0.0.0'), true);
+        assert.equal(isPrivateIp('192.0.2.1'), true);    // TEST-NET-1
+        assert.equal(isPrivateIp('192.88.99.1'), true);  // 6to4 relay
+        assert.equal(isPrivateIp('198.18.0.1'), true);   // benchmarking
+        assert.equal(isPrivateIp('198.51.100.1'), true); // TEST-NET-2
+        assert.equal(isPrivateIp('203.0.113.1'), true);  // TEST-NET-3
+        assert.equal(isPrivateIp('224.0.0.1'), true);    // multicast
+        assert.equal(isPrivateIp('240.0.0.1'), true);    // reserved
+        assert.equal(isPrivateIp('255.255.255.255'), true);
+    });
+
+    it('unwraps IPv6 encodings that hide private IPv4', () => {
+        assert.equal(isPrivateIp('::ffff:7f00:1'), true);    // hex IPv4-mapped loopback
+        assert.equal(isPrivateIp('::ffff:127.0.0.1'), true);
+        assert.equal(isPrivateIp('[::1]'), true);            // bracketed literal
+        assert.equal(isPrivateIp('64:ff9b::7f00:1'), true);  // NAT64 -> 127.0.0.1
+        assert.equal(isPrivateIp('64:ff9b::808:808'), false); // NAT64 -> 8.8.8.8
+        assert.equal(isPrivateIp('2002:7f00:1::'), true);    // 6to4 -> 127.0.0.1
+        assert.equal(isPrivateIp('2001:db8::1'), true);      // documentation
+        assert.equal(isPrivateIp('ff02::1'), true);          // multicast
     });
 });
 

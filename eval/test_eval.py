@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -394,6 +396,140 @@ class TestProbeNonescape(unittest.TestCase):
         self.assertEqual(len(train), 2)  # 1 real + 1 ai
         self.assertEqual(len(val), 2)
         self.assertEqual(sum(y for _, y in train), 1)
+
+
+def _load_build_sports():
+    import importlib.util
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "bin", "build-sports-set.py")
+    spec = importlib.util.spec_from_file_location("build_sports_set", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _make_images(folder, count, color):
+    from PIL import Image
+
+    os.makedirs(folder, exist_ok=True)
+    paths = []
+    for i in range(count):
+        p = os.path.join(folder, f"{os.path.basename(folder)}{i}.jpg")
+        Image.new("RGB", (256, 256), (color, (i * 20) % 256, 120)).save(p)
+        paths.append(p)
+    return paths
+
+
+class TestBuildSportsSet(unittest.TestCase):
+    def setUp(self):
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("Pillow not installed")
+        self.builder = _load_build_sports()
+        self.root = tempfile.mkdtemp()
+
+    def _run(self, argv):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return self.builder.main(argv)
+
+    def test_iter_images_filters_and_sorts(self):
+        d = tempfile.mkdtemp()
+        for name in ["b.JPG", "a.png", "c.webp", "note.txt", "x.gif"]:
+            open(os.path.join(d, name), "w").close()
+        os.makedirs(os.path.join(d, "sub"))
+        open(os.path.join(d, "sub", "nested.jpg"), "w").close()
+        got = [os.path.basename(p) for p in self.builder.iter_images(d)]
+        self.assertEqual(got, ["a.png", "b.JPG", "c.webp", "nested.jpg"])
+
+    def test_unique_dest_disambiguates(self):
+        d = tempfile.mkdtemp()
+        open(os.path.join(d, "a.jpg"), "w").close()
+        self.assertEqual(
+            os.path.basename(self.builder.unique_dest(d, "a.jpg")), "a_1.jpg"
+        )
+        self.assertEqual(
+            os.path.basename(self.builder.unique_dest(d, "b.jpg")), "b.jpg"
+        )
+
+    def test_builds_csv_and_manifest(self):
+        real = os.path.join(self.root, "src_real")
+        ai = os.path.join(self.root, "src_ai")
+        _make_images(real, 3, 10)
+        _make_images(ai, 3, 200)
+        out = os.path.join(self.root, "out")
+
+        rc = self._run(
+            [
+                "--real", real,
+                "--ai", ai,
+                "--out", out,
+                "--root", self.root,
+                "--data-dir", self.root,
+                "--provenance", "unit",
+            ]
+        )
+        self.assertEqual(rc, 0)
+
+        csv_path = os.path.join(out, "sports.csv")
+        manifest_path = os.path.join(out, "sports-manifest.jsonl")
+        self.assertTrue(os.path.exists(csv_path))
+        self.assertTrue(os.path.exists(manifest_path))
+
+        with open(csv_path, encoding="utf-8") as f:
+            rows = [line.strip() for line in f if line.strip()]
+        self.assertEqual(rows[0], "file_name,label")
+        labels = [r.split(",")[-1] for r in rows[1:]]
+        self.assertEqual(labels.count("0"), 3)
+        self.assertEqual(labels.count("1"), 3)
+
+        with open(manifest_path, encoding="utf-8") as f:
+            items = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(items), 6)
+        self.assertTrue(all(it["type"] == "image" for it in items))
+        self.assertTrue(all(it["provenance"] == "unit" for it in items))
+        self.assertEqual(sum(it["label"] for it in items), 3)
+
+    def test_drops_exact_duplicates_and_flags_conflicts(self):
+        real = os.path.join(self.root, "src_real")
+        ai = os.path.join(self.root, "src_ai")
+        rp = _make_images(real, 2, 10)
+        ap = _make_images(ai, 2, 200)
+        shutil.copy(rp[0], os.path.join(real, "copy.jpg"))
+        shutil.copy(ap[0], os.path.join(ai, "copy.jpg"))
+        shutil.copy(rp[0], os.path.join(ai, "conflict.jpg"))
+        out = os.path.join(self.root, "out")
+
+        rc = self._run(["--real", real, "--ai", ai, "--out", out, "--root", self.root])
+        self.assertEqual(rc, 0)
+
+        real_out = os.listdir(os.path.join(out, "real"))
+        ai_out = os.listdir(os.path.join(out, "ai"))
+        self.assertEqual(len(real_out), 2)
+        self.assertEqual(len(ai_out), 2)
+
+    def test_missing_source_returns_1(self):
+        rc = self._run(
+            [
+                "--real", os.path.join(self.root, "nope"),
+                "--ai", os.path.join(self.root, "nope2"),
+                "--out", os.path.join(self.root, "out"),
+            ]
+        )
+        self.assertEqual(rc, 1)
+
+    def test_low_quality_image_counted_invalid(self):
+        real = os.path.join(self.root, "src_real")
+        ai = os.path.join(self.root, "src_ai")
+        _make_images(real, 2, 10)
+        _make_images(ai, 2, 200)
+        with open(os.path.join(real, "broken.jpg"), "wb") as f:
+            f.write(b"not an image")
+        out = os.path.join(self.root, "out")
+        rc = self._run(["--real", real, "--ai", ai, "--out", out, "--root", self.root])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(os.listdir(os.path.join(out, "real"))), 2)
 
 
 if __name__ == "__main__":

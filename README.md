@@ -221,11 +221,14 @@ All configuration is environment-based (see `.env.example`):
 | `GROQ_API_KEYS` | ⭕ | — | Comma-separated Groq keys for automatic failover (overrides `GROQ_API_KEY`) |
 | `GEMINI_API_KEYS` | ⭕ | — | AI image forensics. Comma-separated for automatic failover |
 | `GEMINI_MODELS` | ⭕ | built-in list | Comma-separated Gemini vision models to try in order |
-
-Keys use **failover-only rotation**: the app keeps using the active key until it fails, then quarantines it and switches to the next one. A denied key (HTTP `401`/`403`) is quarantined for the rest of the day; a rate-limited key (`429`) is cooled down for 5 minutes and then returns to the pool.
+| `API_AUTH_TOKEN` | ⭕ | — | Bearer token guarding `/api/*`. Unset = open (local dev only); the server logs a warning |
 | `PORT` | ⭕ | `3001` | HTTP port |
 
+Keys use **failover-only rotation**: the app keeps using the active key until it fails, then quarantines it and switches to the next one. A denied key (HTTP `401`/`403`) is quarantined for the rest of the day; a rate-limited key (`429`) is cooled down for 5 minutes and then returns to the pool.
+
 Without `GROQ_API_KEY` the server still boots and serves the UI, but analysis endpoints return a descriptive error instead of crashing.
+
+When `API_AUTH_TOKEN` is set, every `/api/*` request must send it as `Authorization: Bearer <token>` or `X-API-Key: <token>`. Same-origin browser requests from the bundled UI are always allowed; cross-origin requests are always rejected.
 
 ---
 
@@ -314,6 +317,7 @@ Returns Face API availability and the list of recognizable identities. Never fai
 │   ├── sportsKB.js            # Player↔club knowledge base + jersey matching
 │   ├── textDetector.js        # ZeroGPT-style 7-metric statistical detector
 │   ├── scraper.js             # Jina/DDG search + URL scrape (SSRF-guarded)
+│   ├── auth.js                # Optional bearer-token + same-origin guard for /api
 │   ├── retry.js               # Exponential backoff helper
 │   └── logger.js              # Structured ISO-timestamped logging
 ├── python_api.py              # :8000  calibrated TF-IDF + Logistic Regression text classifier
@@ -329,7 +333,8 @@ Returns Face API availability and the list of recognizable identities. Never fai
 ├── public/                    # Frontend (no build step)
 ├── test/                      # node:test suites + Playwright E2E
 ├── bin/                       # download-face.py, download-models.ps1,
-│                              #   convert-nonescape.py, probe-nonescape.py
+│                              #   convert-nonescape.py, probe-nonescape.py,
+│                              #   build-sports-set.py
 ├── PROJECT_MAP.md             # Detailed system map + changelog
 └── requirements.txt
 ```
@@ -343,6 +348,7 @@ Returns Face API availability and the list of recognizable identities. Never fai
 | **SSRF** | `validatePublicUrl()` blocks non-HTTP schemes and any host resolving to private, loopback, link-local, or CGNAT addresses. **Fails closed**, re-validated on every redirect hop (`redirect: 'manual'`), so a hostile server can't bounce the fetcher onto `127.0.0.1` or cloud metadata endpoints. |
 | **Malicious uploads** | Multer MIME filter **plus** server-side magic-byte sniffing — the client-declared content type is never trusted. 5 MB cap, temp file deleted in a `finally` block. |
 | **XSS** | `sanitize()` strips HTML tags and control characters from all text/URL input. The frontend uses `textContent`/`createElement`, never raw `innerHTML`, for dynamic content. |
+| **Authentication** | Optional bearer token (`API_AUTH_TOKEN`) on all `/api/*` routes, compared in constant time; same-origin enforced, cross-origin rejected with `403`. Unset = open local-dev mode with a startup warning. |
 | **CSP & headers** | Helmet with a strict policy, `X-Powered-By` hidden, `Permissions-Policy` and `Cross-Origin-Resource-Policy` set. |
 | **Rate limiting** | Tiered: 15/hr image (protects API spend), 60/hr analysis, 120/hr local text detector. |
 | **API key leakage** | `.env` is gitignored; keys are read only from `process.env` and never returned to clients. Errors are logged server-side, clients get generic messages. |
@@ -353,7 +359,7 @@ Returns Face API availability and the list of recognizable identities. Never fai
 ## Testing
 
 ```bash
-npm test          # 172 tests (full suite: heuristics, sportsKB, groq, server, scraper, text, logger, retry, aiDetector)
+npm test          # 215 tests (full suite: heuristics, sportsKB, groq, server, scraper, auth, text, logger, retry, aiDetector)
 npm run lint      # ESLint
 npm run test:unit # core unit suites only (heuristics, sportsKB, groq)
 npm run test:e2e  # Playwright (requires a running server)
@@ -362,7 +368,7 @@ npm run test:e2e  # Playwright (requires a running server)
 python -m unittest eval.test_eval -v
 ```
 
-Current suite covers: heuristics (physique/portrait/filename), the sports knowledge base, scraper fallbacks, the SSRF guard, text detection, Groq error paths, and Express integration (upload validation, rate limits, error handling).
+Current suite covers: heuristics (physique/portrait/filename), the sports knowledge base, scraper fallbacks, the SSRF guard, API-token auth, text detection, Groq error paths, and Express integration (upload validation, rate limits, error handling).
 
 CI runs lint + tests on every push and PR to `main` (`.github/workflows/ci.yml`).
 

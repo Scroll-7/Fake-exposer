@@ -20,6 +20,7 @@ it with leak-free, multi-metric measurement.
 | `pipeline_eval.py` | The full `/api/analyze/*` pipeline end-to-end | free-tier API calls |
 | `dedupe.py` / `split.py` / `metrics.py` | The reusable harness | free |
 | `fetch_cifake.py` / `make_split.py` | Fetch/build balanced image splits | free |
+| `bin/build-sports-set.py` | Validate+dereplicate a hand-labelled image set | free |
 | `test_eval.py` | Self-tests for the harness (no data needed) | free |
 
 ## Quick runs
@@ -98,6 +99,37 @@ misinformation. Build it incrementally:
   access to (e.g. a free Colab diffusion notebook, Krea, etc.).
 Label each item with a `provenance` field. Start with ~50 per class; this
 beats 10,000 irrelevant political-text rows.
+
+Drop the raw images into two folders and let the helper normalise them:
+
+```bash
+python bin/build-sports-set.py \
+    --real path/to/real --ai path/to/ai \
+    --out eval/data/sports --provenance "own photos + Flux free tier"
+```
+
+It validates each image (decodable, ≥32px shorter edge), drops byte-identical
+duplicates (a duplicate is a leaked example), and writes three things:
+
+```
+eval/data/sports/real/*.jpg            # label 0
+eval/data/sports/ai/*.jpg              # label 1
+eval/data/sports/sports.csv            # file_name,label  -> probe-nonescape.py
+eval/data/sports/sports-manifest.jsonl # -> python -m eval.pipeline_eval
+```
+
+You can also drop the images straight into `eval/data/sports/{real,ai}` and run
+it with just `--out` (it works in place). Then measure both the shipped and the
+locally-probed model on *your* distribution:
+
+```bash
+python -m eval.image_eval --real eval/data/sports/real --ai eval/data/sports/ai
+python -m eval.image_eval --real eval/data/sports/real --ai eval/data/sports/ai \
+    --model nonescape-mini-v1-sports.onnx
+```
+
+If the probe wins on this set and does not collapse elsewhere, point the runtime
+at it with `NONESCAPE_MODEL=nonescape-mini-v1-sports.onnx`.
 
 ## Manifest format (`pipeline_eval.py`)
 
