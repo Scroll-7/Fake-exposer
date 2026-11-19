@@ -1,7 +1,6 @@
-import fs from 'node:fs';
-// test/i18n.test.js
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 const fr = JSON.parse(fs.readFileSync('public/i18n/fr.json', 'utf-8'));
 const en = JSON.parse(fs.readFileSync('public/i18n/en.json', 'utf-8'));
