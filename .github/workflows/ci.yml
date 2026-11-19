@@ -18,11 +18,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-      - run: npm test
-        env:
-          # Tests intentionally run without API keys: groq.test.js asserts the
-          # missing-key error paths, and the rest use a random free port.
-          NODE_OPTIONS: --experimental-test-coverage
+      # Tests intentionally run without API keys: groq.test.js asserts the
+      # missing-key error paths, and the rest use a random free port.
+      # NODE_OPTIONS ne peut pas contenir --experimental-test-coverage (exit 9) :
+      # le drapeau doit etre passe directement a node --test.
+      - name: Tests node:test avec couverture (hors ligne)
+        run: node --test --experimental-test-coverage test/*.test.js
 
   python-eval:
     name: Eval harness self-tests
