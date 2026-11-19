@@ -1,0 +1,35 @@
+# Workflow GÉNÉRÉ par AI Software Factory pour Scroll-7/Fake-exposer.
+# Aucun appel à un modèle externe, aucun secret, aucune donnée réelle.
+# La fusion reste manuelle : ce workflow ne fait que vérifier, jamais déployer.
+name: CI — Fake-exposer (générée localement)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  tests-node:
+    name: Tests node:test (déterministes, hors ligne)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Installer les dépendances depuis le lockfile local
+        run: npm ci
+      - name: Exécuter les tests générés (sans clé ni appel externe)
+        run: node --test test/i18n.test.js
+
+  checks-python:
+    name: Vérification syntaxique Python (local uniquement)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compiler sans exécuter
+        run: python -m compileall -q .
